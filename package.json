@@ -19,7 +19,7 @@
     "debate",
     "self-hosted"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0",
   "engines": {
     "node": ">=18"
   }
