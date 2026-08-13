@@ -1,0 +1,4 @@
+{
+  "type": "module",
+  "//": "Scopes public/ as ES modules for Node tooling. The server (CommonJS) is unaffected."
+}

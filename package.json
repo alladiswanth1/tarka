@@ -1,0 +1,26 @@
+{
+  "name": "tarka",
+  "version": "1.0.0",
+  "description": "Self-hosted chat for any OpenAI-compatible API — multi-provider, streaming, reasoning, and multi-model debate. Zero external dependencies.",
+  "main": "server.js",
+  "scripts": {
+    "server": "node server.js",
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "openai",
+    "chat",
+    "llm",
+    "tarka",
+    "tokenrouter",
+    "openrouter",
+    "reasoning",
+    "debate",
+    "self-hosted"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

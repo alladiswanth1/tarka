@@ -1,0 +1,29 @@
+# Dependencies (this repo has none, but never ship them if they appear)
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+auth.json
+
+# Local Tarka state (project folders, journals, task boards)
+data/
+**/.tarka/
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs and scratch
+*.log
+tmp/
+.cache/
