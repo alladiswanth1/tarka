@@ -1,4 +1,4 @@
-import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, debateSeatRangeLabel } from '../debate/protocol.js';
+import { DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, debateSeatRangeLabel, normalizeDebateRoundMode } from '../debate/protocol.js';
 import { debateSettings, markDebateCustom, scheduleDebateSave, updateDebateTeamsUi } from '../debate/settings.js';
 import { attachModelPicker, updateModelWarnings } from '../models.js';
 import { activeProviderId, providerAccessIssue, providers } from '../providers.js';
@@ -46,10 +46,23 @@ function validateDebateSetup() {
 
 function debateCostHintText() {
   const e = debateSettings.experts.length;
-  const r = debateSettings.maxRounds;
+  const auto = normalizeDebateRoundMode(debateSettings.roundMode) === 'auto';
+  const r = auto ? DEBATE_AUTO_MAX_ROUNDS : debateSettings.maxRounds;
   const finalLabel =
     debateSettings.finalAnswerMode === 'judge' ? '1 judge' : '1 presenter';
-  return `One debate ≈ (${e} experts × ${r} rounds) + ${finalLabel} = up to ${e * r + 1} API calls (excluding automatic retries). Round 1 is blind and runs in parallel. Each expert runs its own model & provider. By default every expert AND the final answer run at your global reasoning effort — switch Expert Reasoning to Off to trade quality for speed.`;
+  const schedule = auto
+    ? `Auto — the team stops when they agree the problem is solved (safety cap ${DEBATE_AUTO_MAX_ROUNDS} rounds). `
+    : '';
+  return `${schedule}One debate ≈ (${e} experts × ${r} rounds) + ${finalLabel} = up to ${e * r + 1} API calls (excluding automatic retries). Round 1 is blind and runs in parallel. Each expert runs its own model & provider. By default every expert AND the final answer run at your global reasoning effort — switch Expert Reasoning to Off to trade quality for speed.`;
+}
+
+function syncDebateRoundModeUi() {
+  const mode = $('#debateRoundMode');
+  if (mode) mode.value = normalizeDebateRoundMode(debateSettings.roundMode);
+  const row = $('#debateMaxRoundsRow');
+  if (row) row.hidden = normalizeDebateRoundMode(debateSettings.roundMode) === 'auto';
+  const rounds = $('#debateMaxRounds');
+  if (rounds) rounds.value = debateSettings.maxRounds;
 }
 
 function updateDebateCostHint() {
@@ -237,8 +250,7 @@ function renderDebateSeats() {
     addBtn.hidden = debateSettings.experts.length >= DEBATE_MAX_SEATS;
     addBtn.textContent = `＋ Add expert (${debateSeatRangeLabel()})`;
   }
-  const rounds = $('#debateMaxRounds');
-  if (rounds) rounds.value = debateSettings.maxRounds;
+  syncDebateRoundModeUi();
   const reasoning = $('#debateReasoning');
   if (reasoning) reasoning.value = debateSettings.expertReasoning;
   const finalMode = $('#debateFinalMode');
@@ -328,4 +340,4 @@ function updateJudgeRowVisibility() {
   updateModelWarnings();
 }
 
-export { buildSeatModelField, debateCostHintText, prefillEmptyDebateSeats, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility, validateDebateSetup };
+export { buildSeatModelField, debateCostHintText, prefillEmptyDebateSeats, renderDebateSeats, syncDebateRoundModeUi, updateDebateCostHint, updateJudgeRowVisibility, validateDebateSetup };

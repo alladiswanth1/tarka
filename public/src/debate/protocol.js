@@ -22,9 +22,24 @@
  * ceiling lives. Everything that caps a lineup imports it from here.
  */
 const DEBATE_MAX_SEATS = 5;
+/** Fixed-mode ceiling. Auto mode uses DEBATE_AUTO_MAX_ROUNDS as a safety cap. */
+const DEBATE_MAX_ROUNDS = 8;
+/** Auto debates stop when the team agrees — this is only so a runaway cannot loop forever. */
+const DEBATE_AUTO_MAX_ROUNDS = 12;
 /** Visible range the editor, cost hint, and docs must use — never a hardcoded 2–4. */
 function debateSeatRangeLabel() {
   return `2–${DEBATE_MAX_SEATS}`;
+}
+
+function normalizeDebateRoundMode(v) {
+  return v === 'auto' ? 'auto' : 'fixed';
+}
+
+/** How many rounds the engine may run. Auto uses the safety cap, not the user's N. */
+function debateRoundBudget({ roundMode, maxRounds } = {}) {
+  if (normalizeDebateRoundMode(roundMode) === 'auto') return DEBATE_AUTO_MAX_ROUNDS;
+  const n = parseInt(maxRounds, 10);
+  return Number.isFinite(n) ? Math.min(DEBATE_MAX_ROUNDS, Math.max(1, n)) : 4;
 }
 
 /**
@@ -39,7 +54,7 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1];
 }
 
-function expertSystemPrompt(seat, seats, { blind = false, finalRound = false } = {}) {
+function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, auto = false } = {}) {
   const names = seats.map((s) => s.name).join(', ');
   const lines = [
     `You are ${seat.name}, one of ${seats.length} AI experts (${names}) working together to solve a client's task.`,
@@ -60,9 +75,16 @@ function expertSystemPrompt(seat, seats, { blind = false, finalRound = false } =
       'This is the opening round: give your own independent take on the task; you will see your colleagues\' views next round.'
     );
   }
+  if (auto && !finalRound && !blind) {
+    lines.push(
+      'There is no fixed round budget. AGREE only when the client\'s problem is actually solved and the team\'s answer is complete. CONTINUE while a material flaw, missing piece, or unresolved disagreement remains.'
+    );
+  }
   if (finalRound) {
     lines.push(
-      'This is the FINAL scheduled round — converge now. Unless a truly blocking flaw remains, AGREE and nominate the best writer. If you must CONTINUE, name the single blocking issue in one sentence.'
+      auto
+        ? 'This is the last allowed round (safety cap). Converge now. Unless a truly blocking flaw remains, AGREE and nominate the best writer. If you must CONTINUE, name the single blocking issue in one sentence.'
+        : 'This is the FINAL scheduled round — converge now. Unless a truly blocking flaw remains, AGREE and nominate the best writer. If you must CONTINUE, name the single blocking issue in one sentence.'
     );
   }
   lines.push(
@@ -75,7 +97,7 @@ function expertSystemPrompt(seat, seats, { blind = false, finalRound = false } =
   return lines.join('\n');
 }
 
-function presenterSystemPrompt(seat, seats, { consensus = true } = {}) {
+function presenterSystemPrompt(seat, seats, { consensus = true, interrupted = false } = {}) {
   const names = seats.map((s) => s.name).join(', ');
   const lines = [
     `You are ${seat.name}, one of ${seats.length} AI experts (${names}) who just finished discussing a client's task.`,
@@ -85,7 +107,11 @@ function presenterSystemPrompt(seat, seats, { consensus = true } = {}) {
     "Write the complete, polished deliverable for the client directly — no meta-commentary about the debate, no status line, no mention of your colleagues. Just the best possible answer, incorporating the team's conclusions.",
     'Hold the same elite bar however small the task looks — the client gets your absolute best work either way.'
   ];
-  if (!consensus) {
+  if (interrupted) {
+    lines.push(
+      'The client stopped the discussion before the team finished. Write the complete deliverable from what has already been established — do not invent unresolved work as done.'
+    );
+  } else if (!consensus) {
     lines.push(
       'The team did not reach full consensus. Where positions still differed, resolve each point explicitly with your best judgment rather than papering over it.'
     );
@@ -94,7 +120,7 @@ function presenterSystemPrompt(seat, seats, { consensus = true } = {}) {
 }
 
 /** Neutral judge — not a debater; no status line */
-function judgeSystemPrompt(seats) {
+function judgeSystemPrompt(seats, { interrupted = false } = {}) {
   const names = seats.map((s) => s.name).join(', ');
   return [
     'You are a neutral judge. You are NOT one of the debaters and must not role-play as any of them.',
@@ -108,8 +134,13 @@ function judgeSystemPrompt(seats) {
     '- Hold an elite quality bar regardless of how small the task is.',
     '- If the experts disagreed on something material, end with a short section titled exactly "Where the team disagreed" (2–4 lines) naming the tradeoff.',
     '- If there was no material disagreement, omit that section entirely.',
+    interrupted
+      ? '- The client stopped the discussion early. Write from what the experts already established; do not invent unresolved work as done.'
+      : '',
     '- No status line, no meta-commentary about being a judge, no nomination markers.'
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /**
@@ -389,7 +420,8 @@ function debateAnswerAttribution({ judgeDelivered = false, judgeSeat = null, sea
 }
 
 export {
-  DEBATE_MAX_SEATS, DEBATE_DEFAULT_PERSONA, debateSeatRangeLabel,
+  DEBATE_MAX_SEATS, DEBATE_MAX_ROUNDS, DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA,
+  debateSeatRangeLabel, normalizeDebateRoundMode, debateRoundBudget,
   joinNames, expertSystemPrompt, presenterSystemPrompt, judgeSystemPrompt,
   formatDebateTranscript, buildDebateTurnMessage,
   DEBATE_STATUS_RE, DEBATE_STATUS_FIND_RE, parseDebateStatus, stripStreamingStatusTail,

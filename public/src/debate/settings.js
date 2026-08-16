@@ -1,4 +1,4 @@
-import { DEBATE_MAX_SEATS } from '../debate/protocol.js';
+import { DEBATE_MAX_SEATS, debateRoundBudget, normalizeDebateRoundMode } from '../debate/protocol.js';
 import { prefillEmptyDebateSeats, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from '../debate/ui.js';
 import { projectMode, refreshEmptyWelcome, setProjectMode, updateDebateToggleUi } from '../project/state.js';
 import { $, TEAMS_KEY, activeTeamId, debateTeams, setActiveTeamId, setDebateTeams } from '../state.js';
@@ -28,6 +28,8 @@ function defaultDebateSettings() {
     // model '' = empty (required choice); providerId '' resolved at validate/render time
     experts: DEBATE_DEFAULT_EXPERTS.map((e) => ({ ...e, model: '', providerId: '' })),
     maxRounds: 4,
+    // 'fixed' = stop after maxRounds (legacy). 'auto' = team AGREE ends it.
+    roundMode: 'fixed',
     // Elite by default: experts think at the global reasoning effort, like the
     // final answer. 'off' remains available as an explicit economy choice.
     expertReasoning: 'inherit',
@@ -55,7 +57,8 @@ function loadDebateSettings() {
             model: String(e?.model || ''),
             providerId: String(e?.providerId || '')
           })),
-        maxRounds: Math.min(8, Math.max(1, parseInt(d.maxRounds, 10) || 4)),
+        maxRounds: debateRoundBudget({ roundMode: 'fixed', maxRounds: d.maxRounds }),
+        roundMode: normalizeDebateRoundMode(d.roundMode),
         expertReasoning: d.expertReasoning === 'off' ? 'off' : 'inherit',
         finalAnswerMode: d.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
         judge: {
@@ -122,7 +125,8 @@ function loadDebateTeams() {
         id: String(t.id),
         name: String(t.name).slice(0, 40),
         experts: Array.isArray(t.experts) ? t.experts : [],
-        maxRounds: Math.min(8, Math.max(1, parseInt(t.maxRounds, 10) || 4)),
+        maxRounds: debateRoundBudget({ roundMode: 'fixed', maxRounds: t.maxRounds }),
+        roundMode: normalizeDebateRoundMode(t.roundMode),
         expertReasoning: t.expertReasoning === 'off' ? 'off' : 'inherit',
         finalAnswerMode: t.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
         judge: {
@@ -153,6 +157,7 @@ function snapshotDebateTeamConfig() {
       providerId: e.providerId
     })),
     maxRounds: debateSettings.maxRounds,
+    roundMode: normalizeDebateRoundMode(debateSettings.roundMode),
     expertReasoning: debateSettings.expertReasoning,
     finalAnswerMode: debateSettings.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
     judge: {
@@ -175,7 +180,8 @@ function applyDebateTeamConfig(cfg, { enable = false } = {}) {
   if (debateSettings.experts.length < 2) {
     debateSettings.experts = base.experts.map((e) => ({ ...e }));
   }
-  debateSettings.maxRounds = Math.min(8, Math.max(1, parseInt(cfg.maxRounds, 10) || 4));
+  debateSettings.maxRounds = debateRoundBudget({ roundMode: 'fixed', maxRounds: cfg.maxRounds });
+  debateSettings.roundMode = normalizeDebateRoundMode(cfg.roundMode);
   debateSettings.expertReasoning = cfg.expertReasoning === 'off' ? 'off' : 'inherit';
   debateSettings.finalAnswerMode = cfg.finalAnswerMode === 'judge' ? 'judge' : 'nominated';
   debateSettings.judge = {

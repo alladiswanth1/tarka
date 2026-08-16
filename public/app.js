@@ -13,7 +13,7 @@ import { scheduleComposerDraftSave, sendMessage } from './src/compose.js';
 import { getConfig, loadConfig, saveConfig, scheduleConfigAutosave } from './src/config.js';
 import { detectContextFromProvider, loadProviderContextCache, scheduleContextDetect, updateContextUI } from './src/context.js';
 import { debateSettings, loadDebateSettings, loadDebateTeamById, markDebateCustom, newTeamId, saveDebateSettings, saveDebateTeams, setDebateMode, snapshotDebateTeamConfig, updateDebateTeamsUi } from './src/debate/settings.js';
-import { renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from './src/debate/ui.js';
+import { renderDebateSeats, syncDebateRoundModeUi, updateDebateCostHint, updateJudgeRowVisibility } from './src/debate/ui.js';
 import { exportChat } from './src/export.js';
 import { attachModelPicker, favoriteId, loadSavedModels, saveSavedModels, updateModelWarnings } from './src/models.js';
 import { renderProjectPanel, renderProjectThread } from './src/project/journal.js';
@@ -410,6 +410,14 @@ $('#addSeatBtn')?.addEventListener('click', () => {
   });
   markDebateCustom();
   renderDebateSeats();
+});
+
+$('#debateRoundMode')?.addEventListener('change', () => {
+  debateSettings.roundMode = $('#debateRoundMode').value === 'auto' ? 'auto' : 'fixed';
+  markDebateCustom();
+  syncDebateRoundModeUi();
+  updateDebateCostHint();
+  updateModeStrip();
 });
 
 $('#debateMaxRounds')?.addEventListener('input', () => {

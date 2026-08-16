@@ -431,6 +431,31 @@ test('a plain write fence still parses exactly as before', () => {
  * and an empty persona falls back to one shared default — both constants live
  * in protocol.js so the editor UI, settings loader, and engine cannot drift.
  */
+test('debateRoundBudget: fixed uses N, auto uses the safety cap', () => {
+  assert.equal(D.normalizeDebateRoundMode('auto'), 'auto');
+  assert.equal(D.normalizeDebateRoundMode('fixed'), 'fixed');
+  assert.equal(D.normalizeDebateRoundMode('nope'), 'fixed');
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 4 }), 4);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 99 }), D.DEBATE_MAX_ROUNDS);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 0 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'auto', maxRounds: 2 }), D.DEBATE_AUTO_MAX_ROUNDS);
+  assert.ok(D.DEBATE_AUTO_MAX_ROUNDS > D.DEBATE_MAX_ROUNDS);
+});
+
+test('auto-round prompts tell seats to AGREE only when the problem is solved', () => {
+  const seat = { name: 'Kai', persona: 'Skeptic.' };
+  const seats = [seat, { name: 'Nova', persona: 'Visionary.' }];
+  const auto = D.expertSystemPrompt(seat, seats, { auto: true });
+  assert.match(auto, /no fixed round budget/i);
+  assert.match(auto, /actually solved/i);
+  const cap = D.expertSystemPrompt(seat, seats, { auto: true, finalRound: true });
+  assert.match(cap, /safety cap/i);
+  const interrupted = D.presenterSystemPrompt(seat, seats, { interrupted: true });
+  assert.match(interrupted, /stopped the discussion/i);
+  const judge = D.judgeSystemPrompt(seats, { interrupted: true });
+  assert.match(judge, /stopped the discussion/i);
+});
+
 test('debate seat ceiling and default persona are the shared constants', () => {
   assert.equal(D.DEBATE_MAX_SEATS, 5);
   assert.equal(D.debateSeatRangeLabel(), `2–${D.DEBATE_MAX_SEATS}`);

@@ -205,6 +205,13 @@
           <div id="debateModelWarn" class="debate-model-warn" hidden></div>
           <button type="button" id="addSeatBtn" class="text-btn">＋ Add expert</button>
           <label>
+            Rounds
+            <select id="debateRoundMode" aria-label="Debate round mode">
+              <option value="fixed" selected>Fixed — stop after N rounds</option>
+              <option value="auto">Auto — team stops when the problem is solved</option>
+            </select>
+          </label>
+          <label id="debateMaxRoundsRow">
             Max Rounds
             <input type="number" id="debateMaxRounds" min="1" max="8" step="1" value="4" />
           </label>

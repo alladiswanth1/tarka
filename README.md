@@ -84,6 +84,8 @@ Type in the composer and press Enter. Streaming, reasoning, and usage show in th
 
 Round 1 is blind and parallel. Later rounds share a transcript. Opening-round votes do not count as consensus. A seat that fails twice drops out; the others continue. The nominated expert writes the final answer, or a neutral judge if you configured one. If the judge is down, the nominee writes and the credit line names who did.
 
+**Auto rounds** (optional): the team keeps going until they AGREE the problem is solved, with a 12-round safety cap. Stop (Esc) during Auto still writes a final answer from the discussion so far.
+
 ### Project
 
 1. Toggle **Project**.
