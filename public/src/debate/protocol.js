@@ -248,14 +248,37 @@ function debateTurnSpeaker(turn, seats) {
   return { name: String(t.name || list[i]?.name || '?'), i };
 }
 
+function escapeSeatNameRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Exact name first. Fuzzy match requires a whole-word hit and prefers the
+ * LONGEST seat name, so "Al" cannot steal a nomination of "Alice Smith".
+ */
 function matchSeatByName(name, seats) {
   if (!name) return null;
-  const n = name.toLowerCase();
-  return (
-    seats.find((s) => s.name.toLowerCase() === n) ||
-    seats.find((s) => n.includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(n)) ||
-    null
-  );
+  const n = String(name).trim().toLowerCase();
+  if (!n) return null;
+  const list = Array.isArray(seats) ? seats : [];
+  const exact = list.find((s) => s && String(s.name || '').toLowerCase() === n);
+  if (exact) return exact;
+  let best = null;
+  let bestLen = 0;
+  for (const s of list) {
+    if (!s) continue;
+    const sn = String(s.name || '').trim().toLowerCase();
+    if (!sn) continue;
+    const shorter = sn.length <= n.length ? sn : n;
+    const longer = sn.length <= n.length ? n : sn;
+    const re = new RegExp(`(?:^|[^a-z0-9])${escapeSeatNameRe(shorter)}(?:[^a-z0-9]|$)`, 'i');
+    if (!re.test(longer)) continue;
+    if (sn.length > bestLen) {
+      best = s;
+      bestLen = sn.length;
+    }
+  }
+  return best;
 }
 
 /**

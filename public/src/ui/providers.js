@@ -4,6 +4,12 @@ import { renderDebateSeats } from '../debate/ui.js';
 import { updateModelWarnings } from '../models.js';
 import { updateModeStrip } from '../project/state.js';
 import { activeProviderId, formatDeclaredModels, getActiveProvider, isLocalProvider, newProviderId, parseDeclaredModels, providerHostname, providers, saveProviders, setActiveProviderId, setProviders } from '../providers.js';
+
+/** Filled by localAgents.js — keeps the chip strip in sync without a cycle. */
+let refreshLocalAgentStrip = () => {};
+function setLocalAgentStripRefresh(fn) {
+  refreshLocalAgentStrip = typeof fn === 'function' ? fn : () => {};
+}
 import { $, prefersReducedMotion, setDetectContextInflight } from '../state.js';
 import { setSidebarPanel } from '../ui/sidebar.js';
 import { flashStatus } from '../ui/transcript.js';
@@ -74,6 +80,7 @@ function setActiveProvider(id) {
   const mainModel = $('#model');
   if (mainModel && mainModel._modelPickerRefresh) mainModel._modelPickerRefresh();
   updateModelWarnings();
+  refreshLocalAgentStrip();
   flashStatus(`Provider → ${getActiveProvider().name}`);
 }
 
@@ -100,6 +107,8 @@ function openProviderEditor(id = null) {
   $('#provDelete').hidden = !p;
   $('#providerEditor')?.classList.add('open');
   $('#addProviderBtn')?.setAttribute('aria-expanded', 'true');
+  const editor = $('#providerEditor');
+  if (editor) editor.inert = false;
   // Focus once the drawer has expanded
   setTimeout(() => $('#provName')?.focus(), prefersReducedMotion.matches ? 0 : 200);
 }
@@ -113,7 +122,11 @@ function closeProviderEditor() {
     note.hidden = true;
     note.textContent = '';
   }
-  $('#providerEditor')?.classList.remove('open');
+  const editor = $('#providerEditor');
+  if (editor) {
+    editor.classList.remove('open');
+    editor.inert = true;
+  }
   $('#addProviderBtn')?.setAttribute('aria-expanded', 'false');
 }
 
@@ -238,4 +251,4 @@ function updateTopbar() {
   updateContextUI();
 }
 
-export { closeProviderEditor, deleteProviderFromEditor, editingProviderId, maskedKeyLabel, openProviderEditor, renderProviders, saveProviderFromEditor, setActiveProvider, swapChipText, updateTopbar };
+export { closeProviderEditor, deleteProviderFromEditor, editingProviderId, maskedKeyLabel, openProviderEditor, renderProviders, saveProviderFromEditor, setActiveProvider, setLocalAgentStripRefresh, swapChipText, updateTopbar };

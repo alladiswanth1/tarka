@@ -3,7 +3,7 @@ import { localAgentId } from '../providers.js';
 import { pushRecentModel, warmProviderCatalogs } from '../models.js';
 import { isTransientProviderError, sleep, streamCompletion } from '../net/stream.js';
 import { pjEmit, pjToolCardDom, pjToolLabel, pjTurnShellDom } from '../project/journal.js';
-import { buildProjectSystemPrompt, evaluateProjectDoneClaim, parseAgentResponse, pjDisplayable, pjElide, pjJournalLineForPrompt, pjTrimConvo, recordProjectToolEvidence, resolveProjectNextSeat } from '../project/protocol.js';
+import { buildProjectSystemPrompt, evaluateProjectDoneClaim, noteRepeatToolCall, parseAgentResponse, pjDisplayable, pjElide, pjJournalLineForPrompt, pjTrimConvo, projectToolCallKey, projectToolCallPayload, recordProjectToolEvidence, resolveProjectNextSeat } from '../project/protocol.js';
 import { activeProject, pjApi, pjPersistJournal, projectDecisions, projectJournal, projectRun, projectSeats, projectTasks, renderProjectTasksList, setProjectBusy, setProjectRun, updateModeStrip } from '../project/state.js';
 import { executeAgentBlock } from '../project/tools.js';
 import { abortController, messagesEl, setAbortController, statusText, userInput } from '../state.js';
@@ -96,6 +96,7 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
   // What this turn actually accomplished — the session uses it to decide
   // whether a "done" claim has anything behind it.
   const did = { work: 0, inspect: 0 };
+  const seenToolCalls = new Map();
 
   for (let step = 1; step <= PJ_INNER_STEPS; step++) {
     statusText.textContent = `${seat.name} · turn ${turn}/${maxTurns}${step > 1 ? ` · step ${step}` : ''}…`;
@@ -243,8 +244,17 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
       // Only blocked / failed-to-start runs carry no evidence.
       // Listing counts as looking, but not as having built anything — see
       // recordProjectToolEvidence / PJ_SESSION_WORK_TOOLS.
-      recordProjectToolEvidence(out, did);
-      convoResults.push(`[${bi + 1}] ${pjToolLabel(out.tool, out.args)} → ${out.ok ? 'OK' : 'ERROR'}\n${pjElide(out.convo, resultCap)}`);
+      const callKey = projectToolCallKey(out.tool, projectToolCallPayload(block));
+      const repeat = noteRepeatToolCall(seenToolCalls, callKey, out.detail);
+      if (!repeat.repeat) recordProjectToolEvidence(out, did);
+      const resultBody = pjElide(out.convo, resultCap);
+      convoResults.push(
+        repeat.repeat
+          ? `[${bi + 1}] ${pjToolLabel(out.tool, out.args)} → REPEAT (not new progress)\n` +
+            `You already ran this exact call. Prior result: ${repeat.prior || '(see earlier)'}\n` +
+            `Do not repeat it — change the arguments, pick another tool, or end the turn.\n${resultBody}`
+          : `[${bi + 1}] ${pjToolLabel(out.tool, out.args)} → ${out.ok ? 'OK' : 'ERROR'}\n${resultBody}`
+      );
     }
 
     convo.push({ role: 'assistant', content: result.content });
@@ -402,6 +412,10 @@ async function runProjectSession(instruction) {
         // deliberately do not need every seat to re-verify the same work.
         await runProjectReport(seat, instruction, opts);
         if (stale()) return;
+        if (opts.signal.aborted) {
+          stopped = true;
+          break;
+        }
         pjEmit({ type: 'session', phase: 'end', reason: 'complete ✓' });
         flashMarkAgreed();
         finished = true;

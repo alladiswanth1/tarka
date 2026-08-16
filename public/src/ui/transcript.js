@@ -3,6 +3,7 @@ import { runDebate } from '../debate/engine.js';
 import { validateDebateSetup } from '../debate/ui.js';
 import { scheduleHistorySave } from '../history.js';
 import { renderMarkdown } from '../markdown.js';
+import { getConfig } from '../config.js';
 import { getValidatedConfig } from '../net/stream.js';
 import { renderHistoryFromState } from '../sessions.js';
 import { streamAssistantReply } from '../solo.js';
@@ -379,9 +380,6 @@ async function regenerate(msgEl) {
     flashStatus('Only the latest reply can be regenerated');
     return;
   }
-  const cfg = getValidatedConfig();
-  if (!cfg) return;
-  // Debate replies regenerate as debates — setup must still be valid
   const wasDebate = !!messages[messages.length - 1]?.debate;
   if (wasDebate) {
     const issue = validateDebateSetup();
@@ -391,6 +389,9 @@ async function regenerate(msgEl) {
       setSidebarPanel('debate');
       return;
     }
+  } else {
+    const cfg = getValidatedConfig();
+    if (!cfg) return;
   }
   const removed = messages.pop();
   scheduleHistorySave();
@@ -401,8 +402,10 @@ async function regenerate(msgEl) {
     ? messages[messages.length - 1].content
     : '';
   if (removed && removed.debate && lastUser) {
-    await runDebate(cfg, lastUser);
+    await runDebate(getConfig(), lastUser);
   } else {
+    const cfg = getValidatedConfig();
+    if (!cfg) return;
     await streamAssistantReply(cfg);
   }
 }
@@ -459,8 +462,6 @@ async function retryLastTurn({ debate = false } = {}) {
     flashStatus('Nothing to retry');
     return;
   }
-  const cfg = getValidatedConfig();
-  if (!cfg) return;
   if (debate) {
     const issue = validateDebateSetup();
     if (issue) {
@@ -469,11 +470,16 @@ async function retryLastTurn({ debate = false } = {}) {
       setSidebarPanel('debate');
       return;
     }
+    stickToBottom = true;
+    flashStatus('Retrying…');
+    await runDebate(getConfig(), last.content);
+    return;
   }
+  const cfg = getValidatedConfig();
+  if (!cfg) return;
   stickToBottom = true;
   flashStatus('Retrying…');
-  if (debate) await runDebate(cfg, last.content);
-  else await streamAssistantReply(cfg);
+  await streamAssistantReply(cfg);
 }
 
 /** Floating auto-dismissing toast (the transcript copy above stays permanently) */
@@ -617,6 +623,9 @@ function setStreamingUi(active) {
   sendBtn.setAttribute('aria-label', active ? 'Stop generation' : 'Send message');
   // Ambient "alive while thinking" cue on the page chrome
   document.body.classList.toggle('is-streaming', !!active);
+  // Mode switches mid-run hide a docked arena / kill the project journal view
+  $('#debateToggle')?.toggleAttribute('disabled', !!active);
+  $('#projectToggle')?.toggleAttribute('disabled', !!active);
 }
 
 /** Run fn inside a View Transition when supported; otherwise run immediately. */

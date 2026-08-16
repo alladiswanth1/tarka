@@ -65,13 +65,19 @@ let dockedArena = null;
 /** Cached project file listing for the workspace pane */
 let projectFiles = [];
 
-let projectFilesInflight = false;
+let projectFilesError = '';
+
+/** Bumped on every list request so a late reply cannot paint the wrong tree. */
+let projectFilesInflight = 0;
 
 let projectTurnNow = 0;
 
 let projectTurnMax = 0;
 
 function currentMode() {
+  // A live docked arena wins over the composer toggle — turning Debate off
+  // mid-run must not hide the discussion in a `hidden` pane.
+  if (dockedArena) return 'debate';
   if (typeof projectMode !== 'undefined' && projectMode.enabled) return 'project';
   if (typeof debateSettings !== 'undefined' && debateSettings.enabled) return 'debate';
   return 'solo';
@@ -209,9 +215,19 @@ function dockArenaIntoMessage() {
   clearInspectorArena();
 }
 
-/** Inspector hidden or window narrowed mid-debate → fall back to inline */
+/** Inspector hidden or window narrowed mid-debate → fall back to inline.
+ * Opening the inspector mid-debate remounts a live arena that was inline. */
 function reflowArena() {
-  if (!dockedArena || inspectorVisible()) return;
+  if (inspectorVisible()) {
+    if (dockedArena) return;
+    const live = document.querySelector('#messages .debate-panel.thinking');
+    if (!live) return;
+    const msgBody = live.closest('.msg-body');
+    const bubble = msgBody?.querySelector('.bubble');
+    if (msgBody && bubble) mountArena(live, msgBody, bubble);
+    return;
+  }
+  if (!dockedArena) return;
   const { el, msgBody, bubble, ref } = dockedArena;
   dockedArena = null;
   if (ref && ref.parentNode) ref.remove();
@@ -238,15 +254,18 @@ function projectTouchedPaths() {
 }
 
 async function refreshProjectFiles() {
-  if (!activeProject || projectFilesInflight) return;
-  projectFilesInflight = true;
+  if (!activeProject) return;
+  const id = activeProject.id;
+  const gen = ++projectFilesInflight;
   try {
-    const data = await pjApi('/api/project/fs', { id: activeProject.id, op: 'list', path: '' });
+    const data = await pjApi('/api/project/fs', { id, op: 'list', path: '' });
+    if (gen !== projectFilesInflight || activeProject?.id !== id) return;
     projectFiles = (data.result?.entries || []).slice(0, 300);
-  } catch {
+    projectFilesError = '';
+  } catch (e) {
+    if (gen !== projectFilesInflight || activeProject?.id !== id) return;
     projectFiles = [];
-  } finally {
-    projectFilesInflight = false;
+    projectFilesError = e.message || 'list failed';
   }
   renderProjectTree();
 }
@@ -257,6 +276,10 @@ function renderProjectTree() {
   wrap.innerHTML = '';
   if (!activeProject) {
     wrap.innerHTML = '<div class="tree-empty">No project selected</div>';
+    return;
+  }
+  if (projectFilesError) {
+    wrap.innerHTML = '<div class="tree-empty">Couldn’t list files — tap refresh</div>';
     return;
   }
   if (!projectFiles.length) {
@@ -374,8 +397,13 @@ function initInspector() {
   $('#railCmdk')?.addEventListener('click', () => openCmdk());
 
   document.querySelectorAll('.insp-tab').forEach((tab) => {
+    tab.setAttribute('aria-selected', tab.classList.contains('on') ? 'true' : 'false');
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.insp-tab').forEach((t) => t.classList.toggle('on', t === tab));
+      document.querySelectorAll('.insp-tab').forEach((t) => {
+        const on = t === tab;
+        t.classList.toggle('on', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
       document.querySelectorAll('[data-ppane]').forEach((pane) => {
         pane.hidden = pane.dataset.ppane !== tab.dataset.ptab;
       });

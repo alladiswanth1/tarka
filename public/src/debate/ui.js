@@ -58,9 +58,24 @@ function updateDebateCostHint() {
 }
 
 /**
- * Build a model picker field (shared by seats + judge).
- * Returns the .model-picker wrapper (append this to the form).
+ * Copy the current Solo model/provider onto any seat that is still empty,
+ * so toggling Debate on does not immediately fail setup.
  */
+function prefillEmptyDebateSeats() {
+  const model = ($('#model')?.value || '').trim();
+  const pid = activeProviderId || providers[0]?.id || '';
+  for (const e of debateSettings.experts) {
+    if (!(e.model || '').trim() && model) e.model = model;
+    if (!(e.providerId || '').trim() && pid) e.providerId = pid;
+  }
+  if (debateSettings.finalAnswerMode === 'judge') {
+    if (!debateSettings.judge) debateSettings.judge = { model: '', providerId: '' };
+    if (!(debateSettings.judge.model || '').trim() && model) debateSettings.judge.model = model;
+    if (!(debateSettings.judge.providerId || '').trim() && pid) {
+      debateSettings.judge.providerId = pid;
+    }
+  }
+}
 
 /**
  * Build a model picker field (shared by seats + judge).
@@ -313,4 +328,4 @@ function updateJudgeRowVisibility() {
   updateModelWarnings();
 }
 
-export { buildSeatModelField, debateCostHintText, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility, validateDebateSetup };
+export { buildSeatModelField, debateCostHintText, prefillEmptyDebateSeats, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility, validateDebateSetup };

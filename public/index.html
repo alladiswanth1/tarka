@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'" />
   <meta name="color-scheme" content="dark" />
   <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2314171f'/><g transform='translate(16 16) scale(.92) translate(-16 -16)'><circle cx='16' cy='16' r='10.6' fill='none' stroke='%23818cf8' stroke-width='1.6' stroke-opacity='.5'/><circle cx='16' cy='5.4' r='2.5' fill='%23818cf8' fill-opacity='1'/><circle cx='25.18' cy='21.3' r='2.5' fill='%23818cf8' fill-opacity='.38'/><circle cx='6.82' cy='21.3' r='2.5' fill='%23818cf8' fill-opacity='.38'/><path d='M16 12.2 19.8 16 16 19.8 12.2 16Z' fill='%23818cf8'/></g></svg>" />
@@ -34,6 +34,7 @@
   <link rel="modulepreload" href="src/ui/renderer.js" />
   <link rel="modulepreload" href="src/ui/sidebar.js" />
   <link rel="modulepreload" href="src/ui/transcript.js" />
+  <link rel="modulepreload" href="src/ui/viewport.js" />
   <link rel="modulepreload" href="src/debate/arena.js" />
   <link rel="modulepreload" href="src/debate/engine.js" />
   <link rel="modulepreload" href="src/debate/protocol.js" />
@@ -104,7 +105,7 @@
           <ul id="localAgentList" class="local-agent-list" hidden></ul>
           <ul id="providerList" class="provider-list"></ul>
 
-          <div id="providerEditor" class="provider-editor">
+          <div id="providerEditor" class="provider-editor" inert>
             <div class="provider-editor-inner">
               <div class="provider-editor-card">
                 <label>
@@ -235,6 +236,11 @@
             <button type="button" id="projectNewBtn" class="text-btn" title="Create a new project">＋ New…</button>
           </div>
 
+          <div id="projectMissing" class="project-create-form" hidden>
+            <p class="hint" id="projectMissingNote">That folder is missing. Remove the project from Tarka — your files are not touched.</p>
+            <button type="button" id="projectMissingRemove" class="text-btn danger">Remove from Tarka…</button>
+          </div>
+
           <div id="projectCreateForm" class="project-create-form" hidden>
             <label>
               Project name
@@ -312,7 +318,7 @@
             <span class="dot">·</span>
             <span id="currentReasoningLabel">High reasoning</span>
           </span>
-          <span class="topbar-strip mode-strip" id="modeStrip" hidden></span>
+          <button type="button" class="topbar-strip mode-strip" id="modeStrip" hidden></button>
           <span class="dot">·</span>
           <button type="button" id="contextBadge" class="context-badge" title="Context window usage — click to refresh from provider" aria-label="Context usage, click to detect limit">
             <span class="context-badge-bar"><i id="contextBadgeFill"></i></span>
@@ -337,7 +343,7 @@
         <div class="welcome">
           <div class="welcome-icon"><svg class="tk-mark is-intro" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><circle class="tk-ring" cx="16" cy="16" r="10.6" transform="rotate(-90 16 16)"/><circle class="tk-seat tk-seat-1 is-lead" cx="16" cy="5.4" r="2.5"/><circle class="tk-seat tk-seat-2" cx="25.18" cy="21.3" r="2.5"/><circle class="tk-seat tk-seat-3" cx="6.82" cy="21.3" r="2.5"/><path class="tk-core" d="M16 12.2 19.8 16 16 19.8 12.2 16Z"/></svg></div>
           <h1>Tarka</h1>
-          <p>Talk to any OpenAI-compatible endpoint.<br/>Set Base URL, API Key &amp; Model in the sidebar.</p>
+          <p>Talk to any OpenAI-compatible endpoint, or a signed-in local CLI<br/>(Claude Code, Codex, Grok Build). Set it up in the API panel.</p>
           <div class="quick-tips">
             <button type="button" class="tip" data-prompt="Stream me a short story about a lighthouse keeper, one sentence at a time.">Streaming</button>
             <button type="button" class="tip" data-prompt="Explain step by step: why is the sky blue?">Reasoning</button>
@@ -358,13 +364,13 @@
       <div id="inputArea">
         <div class="input-wrapper">
           <textarea id="userInput" rows="1" placeholder="Message… Enter to send · Shift+Enter newline"></textarea>
-          <button type="button" id="debateToggle" class="debate-toggle" aria-pressed="false" title="Toggle debate mode — a team of AI experts discusses the task and presents one answer">
+          <button type="button" id="debateToggle" class="debate-toggle" aria-pressed="false" aria-label="Debate mode" title="Toggle debate mode — a team of AI experts discusses the task and presents one answer">
             <span class="debate-toggle-icon" aria-hidden="true">⚔</span><span class="debate-toggle-label">Debate</span>
           </button>
-          <button type="button" id="projectToggle" class="debate-toggle project-toggle" aria-pressed="false" title="Toggle project mode — a team of AI models builds inside an assigned folder: files, commands, tasks">
+          <button type="button" id="projectToggle" class="debate-toggle project-toggle" aria-pressed="false" aria-label="Project mode" title="Toggle project mode — a team of AI models builds inside an assigned folder: files, commands, tasks">
             <span class="debate-toggle-icon" aria-hidden="true">▦</span><span class="debate-toggle-label">Project</span>
           </button>
-          <button id="sendBtn" class="send-btn" title="Send">
+          <button type="button" id="sendBtn" class="send-btn" title="Send" aria-label="Send message">
             <span class="send-icon-stack" aria-hidden="true">
               <svg class="icon-send" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
@@ -444,9 +450,9 @@
       <!-- project: files / tasks / decisions -->
       <div class="insp-pane" data-insp="project" hidden>
         <div class="insp-tabs">
-          <button type="button" class="insp-tab on" data-ptab="files">Files</button>
-          <button type="button" class="insp-tab" data-ptab="tasks">Tasks</button>
-          <button type="button" class="insp-tab" data-ptab="decisions">Decisions</button>
+          <button type="button" class="insp-tab on" data-ptab="files" aria-selected="true">Files</button>
+          <button type="button" class="insp-tab" data-ptab="tasks" aria-selected="false">Tasks</button>
+          <button type="button" class="insp-tab" data-ptab="decisions" aria-selected="false">Decisions</button>
         </div>
         <div class="insp-body">
           <div data-ppane="files">

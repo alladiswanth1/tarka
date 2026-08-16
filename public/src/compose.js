@@ -2,6 +2,7 @@ import { runDebate } from './debate/engine.js';
 import { debateSettings } from './debate/settings.js';
 import { validateDebateSetup } from './debate/ui.js';
 import { pushHistoryMessage } from './history.js';
+import { getConfig } from './config.js';
 import { getValidatedConfig } from './net/stream.js';
 import { projectMode, validateProjectSetup } from './project/state.js';
 import { streamAssistantReply } from './solo.js';
@@ -34,15 +35,13 @@ async function sendMessage() {
     clearComposerDraft();
     autoResize();
     fireSendRipple();
+    setStickToBottom(true);
     await runProjectInstruction(text);
     return;
   }
 
-  const cfg = getValidatedConfig();
-  if (!cfg) return;
-
-  // Debate setup must be complete BEFORE the message is committed —
-  // the draft stays in the composer if a seat is missing model/provider
+  // Debate seats carry their own providers. The solo API key must not block
+  // a fully configured team.
   if (debateSettings.enabled) {
     const issue = validateDebateSetup();
     if (issue) {
@@ -51,7 +50,19 @@ async function sendMessage() {
       setSidebarPanel('debate');
       return;
     }
+    pushHistoryMessage('user', text);
+    setStickToBottom(true);
+    appendMessage('user', text);
+    userInput.value = '';
+    clearComposerDraft();
+    autoResize();
+    fireSendRipple();
+    await runDebate(getConfig(), text);
+    return;
   }
+
+  const cfg = getValidatedConfig();
+  if (!cfg) return;
 
   pushHistoryMessage('user', text);
   setStickToBottom(true);
@@ -60,11 +71,7 @@ async function sendMessage() {
   clearComposerDraft();
   autoResize();
   fireSendRipple();
-  if (debateSettings.enabled) {
-    await runDebate(cfg, text);
-  } else {
-    await streamAssistantReply(cfg);
-  }
+  await streamAssistantReply(cfg);
 }
 
 // ===== Composer draft persistence (survives accidental reloads) =====

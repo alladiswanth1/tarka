@@ -1,6 +1,6 @@
 import { DEBATE_MAX_SEATS } from '../debate/protocol.js';
-import { renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from '../debate/ui.js';
-import { updateDebateToggleUi } from '../project/state.js';
+import { prefillEmptyDebateSeats, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from '../debate/ui.js';
+import { projectMode, refreshEmptyWelcome, setProjectMode, updateDebateToggleUi } from '../project/state.js';
 import { $, TEAMS_KEY, activeTeamId, debateTeams, setActiveTeamId, setDebateTeams } from '../state.js';
 import { flashStatus } from '../ui/transcript.js';
 
@@ -221,6 +221,26 @@ function updateDebateTeamsUi() {
   if (del) del.hidden = !activeTeamId;
 }
 
+function setDebateMode(on, { silent = false } = {}) {
+  const next = !!on;
+  if (next === !!debateSettings.enabled) {
+    updateDebateToggleUi();
+    return;
+  }
+  if (next) {
+    prefillEmptyDebateSeats();
+    if (projectMode.enabled) setProjectMode(false, { silent: true });
+  }
+  debateSettings.enabled = next;
+  saveDebateSettings();
+  renderDebateSeats();
+  updateDebateToggleUi();
+  refreshEmptyWelcome();
+  if (!silent) {
+    flashStatus(next ? 'Debate mode on — describe the task' : 'Debate mode off');
+  }
+}
+
 function newTeamId() {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -232,4 +252,4 @@ function newTeamId() {
   return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
-export { DEBATE_DEFAULT_EXPERTS, DEBATE_KEY, applyDebateTeamConfig, debateSaveTimer, debateSettings, defaultDebateSettings, loadDebateSettings, loadDebateTeamById, loadDebateTeams, markDebateCustom, newTeamId, saveDebateSettings, saveDebateTeams, scheduleDebateSave, snapshotDebateTeamConfig, updateDebateTeamsUi };
+export { DEBATE_DEFAULT_EXPERTS, DEBATE_KEY, applyDebateTeamConfig, debateSaveTimer, debateSettings, defaultDebateSettings, loadDebateSettings, loadDebateTeamById, loadDebateTeams, markDebateCustom, newTeamId, saveDebateSettings, saveDebateTeams, scheduleDebateSave, setDebateMode, snapshotDebateTeamConfig, updateDebateTeamsUi };

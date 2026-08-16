@@ -52,6 +52,8 @@ const CONTEXT_PATTERNS = [
   [/gpt[-_]?3\.5/i, 16_385],
   // xAI
   [/grok[-_]?4.*fast/i, 2_000_000],
+  [/grok[-_]?build/i, 256_000],
+  [/grok[-_]?4\.5/i, 256_000],
   [/grok[-_]?code/i, 256_000],
   [/grok[-_]?4/i, 256_000],
   [/grok[-_]?3[-_]?mini/i, 131_072],

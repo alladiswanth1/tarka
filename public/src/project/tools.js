@@ -2,7 +2,7 @@ import { getConfig } from '../config.js';
 import { localAgentId } from '../providers.js';
 import { streamCompletion } from '../net/stream.js';
 import { pjEmit } from '../project/journal.js';
-import { pjElide } from '../project/protocol.js';
+import { commandExitFacts, pjElide } from '../project/protocol.js';
 import { activeProject, pjApi, projectDecisions, projectSeats, projectTasks, renderProjectTasksList, setProjectDecisions } from '../project/state.js';
 
 /* ---------- tool execution ---------- */
@@ -32,7 +32,7 @@ async function executeAgentBlock(block, seat, opts) {
         id: activeProject.id, op: block.kind, path: block.path, content: block.content
       }, sig);
       const r = data.result;
-      return done(true, block.kind, { path: block.path },
+      return done(true, block.kind, { path: block.path, content: block.content },
         `${block.kind === 'append' ? 'appended to' : 'wrote'} ${r.path} — ${r.lines} lines (${r.bytes} bytes)`);
     }
 
@@ -54,7 +54,7 @@ async function executeAgentBlock(block, seat, opts) {
         content = content.slice(0, first) + replace + content.slice(first + find.length);
       }
       await pjApi('/api/project/fs', { id: activeProject.id, op: 'write', path: block.path, content }, sig);
-      return done(true, 'edit', { path: block.path }, `applied ${block.edits.length} edit${block.edits.length === 1 ? '' : 's'} to ${block.path}`);
+      return done(true, 'edit', { path: block.path, edits: block.edits }, `applied ${block.edits.length} edit${block.edits.length === 1 ? '' : 's'} to ${block.path}`);
     }
 
     // JSON tools
@@ -82,15 +82,22 @@ async function executeAgentBlock(block, seat, opts) {
       if (r.blocked || (r.error && r.code === -1 && !r.stdout)) {
         return done(false, tool, spec, r.error || 'command failed to start');
       }
+      const facts = commandExitFacts({
+        timedOut: r.timedOut,
+        signal: r.signal,
+        exitCode: r.code,
+        aborted: r.aborted
+      });
       const out = [
-        `exit ${r.code}${r.timedOut ? ' (TIMED OUT)' : ''}${r.signal ? ` signal ${r.signal}` : ''} · ${r.ms}ms`,
+        `exit ${facts.exitCode}${facts.timedOut ? ' (TIMED OUT)' : ''}${facts.signal ? ` signal ${facts.signal}` : ''} · ${r.ms}ms`,
         r.stdout ? `stdout:\n${pjElide(r.stdout, 6000)}` : '',
         r.stderr ? `stderr:\n${pjElide(r.stderr, 4000)}` : ''
       ].filter(Boolean).join('\n');
       // `ran` distinguishes "executed and exited non-zero" from "never ran":
       // the done-gate counts an executed command as work/inspection evidence
       // even when the exit code is non-zero (grep with no matches exits 1).
-      return { ...done(r.code === 0, tool, spec, out), ran: true };
+      // A timeout/signal is not a clean success even if the process exits 0.
+      return { ...done(facts.cleanSuccess, tool, spec, out), ran: true };
     }
     if (tool === 'mkdir' || tool === 'delete') {
       const data = await pjApi('/api/project/fs', { id: activeProject.id, op: tool, path: spec.path }, sig);
