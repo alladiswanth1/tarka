@@ -709,6 +709,7 @@ select {
   font-size: 0.74rem; font-weight: 500; cursor: pointer; white-space: nowrap; transition: all 0.18s;
 }
 .debate-toggle:hover { color: var(--text-muted); border-color: var(--line-2); }
+.debate-toggle:disabled { opacity: 0.45; cursor: default; }
 .debate-toggle.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .project-toggle.active { background: var(--success); border-color: var(--success); color: #04231a; }
 

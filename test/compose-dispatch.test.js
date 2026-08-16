@@ -92,6 +92,7 @@ test('setup failures return before the composer draft is cleared', () => {
   assert.ok(vProj !== -1 && clearProj !== -1, 'Project must validate, then clear');
   assert.ok(vProj < clearProj, 'validate Project before wiping the input');
   assert.match(projBlock.slice(vProj, clearProj), /if\s*\(\s*issue\s*\)[\s\S]*return/);
+  assert.match(send.slice(send.indexOf('projectMode.enabled'), send.indexOf('runProjectInstruction')), /setStickToBottom/);
 
   const beforeCommit = send.slice(0, send.indexOf('pushHistoryMessage'));
   const vDeb = beforeCommit.indexOf('validateDebateSetup');
@@ -100,9 +101,17 @@ test('setup failures return before the composer draft is cleared', () => {
   assert.match(debCheck, /validateDebateSetup/);
   assert.match(debCheck, /if\s*\(\s*issue\s*\)[\s\S]*return/);
 
-  // Solo config failure also returns before pushHistory / clear
-  const cfg = send.indexOf('getValidatedConfig');
-  const push = send.indexOf('pushHistoryMessage');
-  assert.ok(cfg !== -1 && cfg < push);
-  assert.match(send.slice(cfg, push), /if\s*\(\s*!cfg\s*\)\s*return/);
+  // Solo config failure also returns before the Solo turn is committed.
+  // Debate must NOT go through getValidatedConfig — seats have their own
+  // providers, and a missing solo key must not block a valid team.
+  const solo = send.slice(send.lastIndexOf('getValidatedConfig'));
+  assert.match(solo, /if\s*\(\s*!cfg\s*\)\s*return/);
+  assert.match(solo, /streamAssistantReply/);
+  const debateBlock = send.slice(
+    send.indexOf('debateSettings.enabled'),
+    send.indexOf('getValidatedConfig')
+  );
+  assert.match(debateBlock, /validateDebateSetup/);
+  assert.match(debateBlock, /runDebate/);
+  assert.doesNotMatch(debateBlock, /getValidatedConfig/);
 });

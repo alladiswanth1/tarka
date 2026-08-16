@@ -412,6 +412,10 @@ async function runProjectSession(instruction) {
         // deliberately do not need every seat to re-verify the same work.
         await runProjectReport(seat, instruction, opts);
         if (stale()) return;
+        if (opts.signal.aborted) {
+          stopped = true;
+          break;
+        }
         pjEmit({ type: 'session', phase: 'end', reason: 'complete ✓' });
         flashMarkAgreed();
         finished = true;

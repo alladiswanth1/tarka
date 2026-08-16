@@ -101,6 +101,19 @@ test('matchSeatByName resolves exact then fuzzy, and gives up cleanly', () => {
   assert.equal(D.matchSeatByName(null, seats), null);
 });
 
+test('matchSeatByName does not let a shorter name steal a longer nominee', () => {
+  const seats = [
+    { name: 'Al', i: 0 },
+    { name: 'Alice', i: 1 },
+    { name: 'Expert 1', i: 2 },
+    { name: 'Expert 10', i: 3 }
+  ];
+  assert.equal(D.matchSeatByName('Alice Smith', seats).i, 1);
+  assert.equal(D.matchSeatByName('Al', seats).i, 0);
+  assert.equal(D.matchSeatByName('Expert 10', seats).i, 3);
+  assert.equal(D.matchSeatByName('Expert 1', seats).i, 2);
+});
+
 test('pickDebatePresenter counts nominations and never picks a dropped seat', () => {
   const a = { name: 'A', i: 0, dropped: false };
   const b = { name: 'B', i: 1, dropped: false };
@@ -149,6 +162,14 @@ test('a restored turn is attributed to whoever actually spoke it', () => {
   assert.equal(D.debateTurnSpeaker({ name: 'Ghost' }, seats).i, 0);
   assert.equal(D.debateTurnSpeaker({ i: 0 }, seats).name, 'Kai');
   assert.equal(D.debateTurnSpeaker({}, []).name, '?');
+});
+
+test('a restored roster keeps original seat indexes after a dropout', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'debate', 'engine.js'), 'utf8');
+  assert.match(src, /roster:\s*seats\.map/);
+  const arena = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'debate', 'arena.js'), 'utf8');
+  assert.match(arena, /record\.roster/);
+  assert.match(arena, /setSeatDropped/);
 });
 
 test('formatDebateTranscript drops oldest turns and says how many', () => {

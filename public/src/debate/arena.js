@@ -257,7 +257,13 @@ function buildDebateCredit(presenterName, allNames, opts = {}) {
 function restoreDebateArena(refs, record) {
   const { body: msgBody, bubble } = refs;
   if (!msgBody || !record || !Array.isArray(record.experts)) return;
-  const seats = record.experts.map((name, i) => ({ name: String(name), i }));
+  const seats = Array.isArray(record.roster) && record.roster.length
+    ? record.roster.map((s, i) => ({
+        name: String(s?.name || record.experts[i] || '?'),
+        i: Number.isInteger(s?.i) ? s.i : i,
+        dropped: !!s?.dropped
+      }))
+    : record.experts.map((name, i) => ({ name: String(name), i }));
   const arena = createDebateArena(seats, record.rounds || 1);
   arena.stopTimer();
   const turns = Array.isArray(record.turns) ? record.turns : [];
@@ -274,7 +280,14 @@ function restoreDebateArena(refs, record) {
     arena.addTurn(seat).finish(String(t.text || ''));
   });
   if (!turns.length) arena.addNote('(transcript unavailable — truncated in storage)');
-  if (record.consensus) seats.forEach((s) => arena.setSeatStatus(s.i, true));
+  seats.forEach((s) => {
+    if (s.dropped) arena.setSeatDropped(s.i);
+  });
+  if (record.consensus) {
+    seats.forEach((s) => {
+      if (!s.dropped) arena.setSeatStatus(s.i, true);
+    });
+  }
   const isJudge = record.finalAnswerMode === 'judge';
   arena.finalize({
     rounds: record.rounds || 1,

@@ -17,7 +17,7 @@ import { renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } fro
 import { exportChat } from './src/export.js';
 import { attachModelPicker, favoriteId, loadSavedModels, saveSavedModels, updateModelWarnings } from './src/models.js';
 import { renderProjectPanel, renderProjectThread } from './src/project/journal.js';
-import { activeProject, loadProjectModeLS, pjApi, projectBusy, projectCostHintText, projectJournal, projectList, projectMode, projectTasks, reconcileExclusiveModes, refreshProjectList, renderProjectSeats, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectMode, setProjectShowRoles, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi } from './src/project/state.js';
+import { activeProject, loadProjectModeLS, pjApi, projectBusy, projectCostHintText, projectJournal, projectList, projectMode, projectTasks, reconcileExclusiveModes, refreshProjectList, removeSelectedProject, renderProjectSeats, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectMode, setProjectShowRoles, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi } from './src/project/state.js';
 import { syncLocalAgentProviders } from './src/localAgents.js';
 import { activeProviderId, loadProviders, providers } from './src/providers.js';
 import { initSessions, loadHistory, renderHistoryFromState, renderSessionList } from './src/sessions.js';
@@ -397,19 +397,8 @@ $('#projReasoning')?.addEventListener('change', () => {
   scheduleProjectTeamSave();
 });
 
-$('#projectRemoveBtn')?.addEventListener('click', async () => {
-  if (!activeProject) return;
-  if (!confirm(`Remove “${activeProject.name}” from Tarka?\n\nYour files are never touched. Tarka's notes (.tarka) stay in the folder so you can re-add it later.`)) return;
-  try {
-    await pjApi('/api/projects/delete', { id: activeProject.id });
-    await refreshProjectList();
-    await selectProject('');
-    if (projectMode.enabled) setProjectMode(false, { silent: true });
-    flashStatus('Project removed (files untouched)');
-  } catch (e) {
-    appendError(`Remove project: ${e.message}`);
-  }
-});
+$('#projectRemoveBtn')?.addEventListener('click', removeSelectedProject);
+$('#projectMissingRemove')?.addEventListener('click', removeSelectedProject);
 
 $('#addSeatBtn')?.addEventListener('click', () => {
   if (debateSettings.experts.length >= DEBATE_MAX_SEATS) return;

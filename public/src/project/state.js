@@ -337,6 +337,8 @@ async function selectProject(id, { render = true } = {}) {
     projectJournal = [];
     projectMode.activeId = '';
     saveProjectModeLS();
+    const missing = $('#projectMissing');
+    if (missing) missing.hidden = true;
     if (projectMode.enabled) setProjectMode(false, { silent: true });
     renderProjectPanel();
     updateModeStrip();
@@ -364,11 +366,38 @@ async function selectProject(id, { render = true } = {}) {
     projectTasks = [];
     projectDecisions = [];
     projectJournal = [];
+    projectMode.activeId = id;
+    saveProjectModeLS();
+    const missing = $('#projectMissing');
+    if (missing) missing.hidden = false;
+    const note = $('#projectMissingNote');
+    if (note) note.textContent = e.message || 'That folder is missing.';
+    renderProjectPanel();
+    updateModeStrip();
+    return;
   }
+  const missingOk = $('#projectMissing');
+  if (missingOk) missingOk.hidden = true;
   renderProjectPanel();
   updateModeStrip();
   refreshProjectFiles();
   if (render && projectMode.enabled) renderProjectThread();
+}
+
+async function removeSelectedProject() {
+  const id = activeProject?.id || $('#projectSelect')?.value;
+  if (!id) return;
+  const name = activeProject?.name || projectList.find((p) => p.id === id)?.name || 'this project';
+  if (!confirm(`Remove “${name}” from Tarka?\n\nYour files are never touched. Tarka's notes (.tarka) stay in the folder so you can re-add it later.`)) return;
+  try {
+    await pjApi('/api/projects/delete', { id });
+    await refreshProjectList();
+    await selectProject('');
+    if (projectMode.enabled) setProjectMode(false, { silent: true });
+    flashStatus('Project removed (files untouched)');
+  } catch (e) {
+    appendError(`Remove project: ${e.message}`);
+  }
 }
 
 function scheduleProjectTeamSave() {
@@ -532,4 +561,4 @@ function setProjectRun(v) { projectRun = v; return v; }
 
 function setProjectShowRoles(v) { projectShowRoles = v; return v; }
 
-export { PROJECT_MODE_KEY, activeProject, debateExpertNames, isDebateMode, loadProjectModeLS, pjApi, pjPersistJournal, projectBusy, projectCostHintText, projectDecisions, projectJournal, projectList, projectMode, projectRun, projectSeatName, projectSeats, projectShowRoles, projectTasks, projectTeamSaveTimer, reconcileExclusiveModes, refreshEmptyWelcome, refreshProjectList, renderProjectSeats, renderProjectTasksList, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectBusy, setProjectDecisions, setProjectMode, setProjectRun, setProjectShowRoles, updateComposerPlaceholder, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi, validateProjectSetup };
+export { PROJECT_MODE_KEY, activeProject, debateExpertNames, isDebateMode, loadProjectModeLS, pjApi, pjPersistJournal, projectBusy, projectCostHintText, projectDecisions, projectJournal, projectList, projectMode, projectRun, projectSeatName, projectSeats, projectShowRoles, projectTasks, projectTeamSaveTimer, reconcileExclusiveModes, refreshEmptyWelcome, refreshProjectList, removeSelectedProject, renderProjectSeats, renderProjectTasksList, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectBusy, setProjectDecisions, setProjectMode, setProjectRun, setProjectShowRoles, updateComposerPlaceholder, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi, validateProjectSetup };

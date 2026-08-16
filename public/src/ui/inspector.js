@@ -67,13 +67,17 @@ let projectFiles = [];
 
 let projectFilesError = '';
 
-let projectFilesInflight = false;
+/** Bumped on every list request so a late reply cannot paint the wrong tree. */
+let projectFilesInflight = 0;
 
 let projectTurnNow = 0;
 
 let projectTurnMax = 0;
 
 function currentMode() {
+  // A live docked arena wins over the composer toggle — turning Debate off
+  // mid-run must not hide the discussion in a `hidden` pane.
+  if (dockedArena) return 'debate';
   if (typeof projectMode !== 'undefined' && projectMode.enabled) return 'project';
   if (typeof debateSettings !== 'undefined' && debateSettings.enabled) return 'debate';
   return 'solo';
@@ -250,17 +254,18 @@ function projectTouchedPaths() {
 }
 
 async function refreshProjectFiles() {
-  if (!activeProject || projectFilesInflight) return;
-  projectFilesInflight = true;
+  if (!activeProject) return;
+  const id = activeProject.id;
+  const gen = ++projectFilesInflight;
   try {
-    const data = await pjApi('/api/project/fs', { id: activeProject.id, op: 'list', path: '' });
+    const data = await pjApi('/api/project/fs', { id, op: 'list', path: '' });
+    if (gen !== projectFilesInflight || activeProject?.id !== id) return;
     projectFiles = (data.result?.entries || []).slice(0, 300);
     projectFilesError = '';
   } catch (e) {
+    if (gen !== projectFilesInflight || activeProject?.id !== id) return;
     projectFiles = [];
     projectFilesError = e.message || 'list failed';
-  } finally {
-    projectFilesInflight = false;
   }
   renderProjectTree();
 }

@@ -340,11 +340,7 @@ async function runDebate(cfg, task) {
           // endpoint, so those seats are not dropped or blamed in the arena.
           if (abortedRound) continue;
           errored = true;
-          seats[k].dropped = true;
-          arena.setSeatDropped(seats[k].i);
-          arena.addNote(
-            `⚠ ${seats[k].name}'s opening take failed (${out?.err?.message || 'provider error'}) — continuing without ${seats[k].name}.`
-          );
+          dropSeat(seats[k], out?.err);
         }
         arena.setTokens(transcriptTokens, debateUsage);
         if (abortedRound) {
@@ -662,7 +658,9 @@ async function runDebate(cfg, task) {
         pushRecentModel(presenter.model, presenter.provider?.id);
       }
     } else if (stopped && finalContent) {
-      // Aborted mid-presentation with partial text — mirror normal-chat stop
+      // Aborted mid-presentation with partial text — keep it, but do not
+      // treat it as a finished consensus answer (reload / next debate
+      // would otherwise inherit a truncated deliverable).
       renderer.finish(finalContent + '\n\n*[stopped]*');
     } else if (stopped) {
       arena.finalize({ rounds: roundsRun, presenter: finalLabel, consensus, stopped: true });
@@ -686,7 +684,8 @@ async function runDebate(cfg, task) {
     }
 
     // ---- Success: only the final answer enters history ----
-    const m = pushHistoryMessage('assistant', finalContent);
+    const stored = stopped && finalContent ? `${finalContent}\n\n*[stopped]*` : finalContent;
+    const m = pushHistoryMessage('assistant', stored);
     // The final writer's chain of thought is restored from history exactly like
     // a solo reply's (sessions.js rebuilds the panel when `reasoning` is set) —
     // it just was never saved, so it silently vanished on reload.
@@ -694,18 +693,21 @@ async function runDebate(cfg, task) {
       m.reasoning = finalRText;
       if (finalRApi?.durationMs) m.reasoningMs = finalRApi.durationMs;
     }
-    if (consensus) flashMarkAgreed(); // the team actually agreed — say so
+    if (consensus && !stopped) flashMarkAgreed();
     m.debate = {
       experts: creditNames,
+      // Original indexes so restore can keep chip/turn colours after a dropout.
+      roster: seats.map((s) => ({ name: s.name, i: s.i, dropped: !!s.dropped })),
       rounds: roundsRun,
       presenter: finalLabel,
-      consensus,
+      consensus: !!(consensus && !stopped),
+      stopped: !!stopped,
       // `i` = seat index — restores colors/attribution even with duplicate names
       turns: transcript.map((t) => ({ name: t.name, text: t.text, round: t.round, i: t.seatIdx })),
       finalAnswerMode: judgeDelivered ? 'judge' : 'nominated',
       judgeModel: judgeDelivered ? judgeSeat?.model || '' : undefined
     };
-    addMessageActions(msgEl, msgBody, finalContent);
+    addMessageActions(msgEl, msgBody, stored);
     arena.finalize({
       rounds: roundsRun,
       presenter: finalLabel,
