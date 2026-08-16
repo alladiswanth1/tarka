@@ -1,7 +1,7 @@
 import { tokenCountAnim, updateContextUI } from './context.js';
 import { restoreDebateArena } from './debate/arena.js';
 import { historyQuotaWarned, setHistoryQuotaWarned, truncateDebateRecord } from './history.js';
-import { projectMode, setProjectMode } from './project/state.js';
+import { debateExpertNames, isDebateMode, projectMode, setProjectMode } from './project/state.js';
 import { $, HISTORY_KEY, HISTORY_MAX, chatSession, historySaveTimer, isStreaming, messages, messagesEl, mobileMq, setAbortController, setChatSession, setHistorySaveTimer, setLastCompletionTokens, setLastGenStats, setLastPromptTokens, setMessages, statusText, tokenInfo } from './state.js';
 import { estimateTokens } from './tokens.js';
 import { MARK_SVG, primeMarks } from './ui/mark.js';
@@ -368,20 +368,39 @@ function loadHistory() {
   }
 }
 
-function renderHistoryFromState() {
-  messagesEl.innerHTML = '';
-  if (!messages.length) {
-    messagesEl.innerHTML = `
+function welcomeHtml() {
+  if (isDebateMode()) {
+    const names = debateExpertNames();
+    return `
+    <div class="welcome">
+      <div class="welcome-icon">${MARK_SVG}</div>
+      <h1>Debate</h1>
+      <p>A team of experts discusses the task, then one writes the answer.<br/>Give every seat a model in the Debate panel, then describe the task.</p>
+      <p class="welcome-sub">${names || 'Add at least two experts'}</p>
+      <div class="quick-tips">
+        <button type="button" class="tip" data-prompt="Compare two approaches and recommend one, with the tradeoffs named.">Compare approaches</button>
+        <button type="button" class="tip" data-prompt="Design a small system, then stress-test the design before the final write-up.">Design + critique</button>
+        <button type="button" class="tip" data-prompt="Argue both sides of a decision, then present one recommendation.">Decide</button>
+      </div>
+    </div>`;
+  }
+  return `
     <div class="welcome">
       <div class="welcome-icon">${MARK_SVG}</div>
       <h1>Tarka</h1>
-      <p>Talk to any OpenAI-compatible endpoint.<br/>Set Base URL, API Key &amp; Model in the sidebar.</p>
+      <p>Talk to any OpenAI-compatible endpoint, or a signed-in local CLI<br/>(Claude Code, Codex, Grok Build). Set it up in the API panel.</p>
       <div class="quick-tips">
         <button type="button" class="tip" data-prompt="Stream me a short story about a lighthouse keeper, one sentence at a time.">Streaming</button>
         <button type="button" class="tip" data-prompt="Explain step by step: why is the sky blue?">Reasoning</button>
         <button type="button" class="tip" data-prompt="What model are you, and what are your strengths?">Any model</button>
       </div>
     </div>`;
+}
+
+function renderHistoryFromState() {
+  messagesEl.innerHTML = '';
+  if (!messages.length) {
+    messagesEl.innerHTML = welcomeHtml();
     primeMarks(messagesEl);
     return;
   }

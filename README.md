@@ -2,7 +2,7 @@
 
 Self-hosted chat UI for any OpenAI-compatible API. One process, no install step, no bundler.
 
-Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or a **2–4** member team that writes real files in **Project**. Point it at OpenRouter, TokenRouter, Together, Fireworks, DeepSeek, Moonshot, local vLLM/Ollama — or at the Claude Code / Codex CLI already signed in on this machine.
+Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or a **2–4** member team that writes real files in **Project**. Point it at OpenRouter, TokenRouter, Together, Fireworks, DeepSeek, Moonshot, local vLLM/Ollama — or at the Claude Code, Codex, or Grok Build CLI already signed in on this machine.
 
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/npm_dependencies-0-success)](#development)
@@ -23,7 +23,7 @@ Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or
 | | |
 |---|---|
 | **Any OpenAI-compatible host** | Custom base URL and API key per provider profile. Keys stay in the browser. |
-| **Local Claude Code / Codex** | Detects a signed-in `claude` or `codex` CLI and uses it as a provider. No extra key. |
+| **Local Claude Code / Codex / Grok Build** | Detects a signed-in `claude`, `codex`, or `grok` CLI and uses it as a provider. No extra key. |
 | **Solo** | Streaming replies, reasoning effort, context meter, edit/resend, export. |
 | **Debate** | 2–5 experts, each on its own model/provider. Blind first round, informed consensus, optional judge. |
 | **Project** | 2–4 members build inside one folder: files, shell, task board, decisions. |
@@ -33,7 +33,7 @@ Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or
 
 - [Node.js](https://nodejs.org) 18 or newer
 - A browser
-- An API key for an OpenAI-compatible provider, **or** `claude` / `codex` installed and logged in
+- An API key for an OpenAI-compatible provider, **or** `claude` / `codex` / `grok` installed and logged in
 
 ## Quick start
 
@@ -66,7 +66,7 @@ Model       moonshotai/kimi-k3
 
 Settings autosave. **Save Config** flushes immediately and re-reads the model catalog.
 
-If Claude Code or Codex is already signed in, a chip appears on that same panel. Click it — that profile needs no key.
+If Claude Code, Codex, or Grok Build is already signed in, a chip appears on that same panel. Click it — that profile needs no key.
 
 ### Solo
 
@@ -95,18 +95,22 @@ Members read and write files, run commands, and keep a task board. **Stop** ends
 
 Work is confined to the assigned folder (symlink-safe). Commands are not containerized; catastrophic shells are blocked. Project APIs are loopback-only. Removing a project does not delete your files. Tarka state lives in `.tarka/` inside the folder.
 
-### Local Claude Code and Codex
+### Local Claude Code, Codex, and Grok Build
 
-Tarka does not ship those products. It looks for the binaries and for their auth **files** (`~/.claude.json`, `~/.codex/auth.json`, and the usual fallbacks). It never reads the secret. A ready CLI is a provider on Solo, Debate, and Project.
+Tarka does not ship those products. It looks for the binaries and for their auth **files** (`~/.claude.json`, `~/.codex/auth.json`, `~/.grok/auth.json`, and the usual fallbacks). It never reads the secret. A ready CLI is a provider on Solo, Debate, and Project.
+
+Grok Build is used as a language model (`--max-turns 1`, no shell or file writes of its own). Project Mode still owns files and commands.
 
 ```bash
 claude login          # then reopen Tarka
+codex login
+grok login
 ```
 
 | Variable | Purpose |
 |---|---|
 | `TARKA_AGENT_HOME` | Home directory when Tarka’s `$HOME` is redirected |
-| `TARKA_CLAUDE_BIN` / `TARKA_CODEX_BIN` | Absolute path if the CLI is not on `PATH` |
+| `TARKA_CLAUDE_BIN` / `TARKA_CODEX_BIN` / `TARKA_GROK_BIN` | Absolute path if the CLI is not on `PATH` |
 | `TARKA_LOCAL_AGENT_TIMEOUT_MS` | Spawn timeout (default `600000`) |
 
 ## Keyboard shortcuts

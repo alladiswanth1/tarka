@@ -3,7 +3,7 @@ import { buildSeatModelField } from '../debate/ui.js';
 import { renderProjectPanel, renderProjectThread } from '../project/journal.js';
 import { activeProviderId, providerAccessIssue, providers } from '../providers.js';
 import { renderHistoryFromState } from '../sessions.js';
-import { $, abortController, sidebar, userInput } from '../state.js';
+import { $, abortController, messages, sidebar, userInput } from '../state.js';
 import { refreshProjectFiles, updateInspector } from '../ui/inspector.js';
 import { openSidebar, setSidebarPanel } from '../ui/sidebar.js';
 import { appendError, flashStatus, sweepReasoningTimers, updateScrollFab } from '../ui/transcript.js';
@@ -18,6 +18,17 @@ function updateComposerPlaceholder() {
   }
 }
 
+function isDebateMode() {
+  return !!debateSettings.enabled;
+}
+
+function debateExpertNames() {
+  return (debateSettings.experts || [])
+    .map((e) => (e.name || '').trim() || 'expert')
+    .slice(0, 5)
+    .join(', ');
+}
+
 function updateDebateToggleUi() {
   const btn = $('#debateToggle');
   if (!btn) return;
@@ -26,6 +37,10 @@ function updateDebateToggleUi() {
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   updateComposerPlaceholder();
   updateModeStrip();
+}
+
+function refreshEmptyWelcome() {
+  if (!messages.length && !projectMode.enabled) renderHistoryFromState();
 }
 
 /* ============================================================
@@ -237,6 +252,16 @@ function updateModeStrip() {
   }
 }
 
+/** Project and Debate cannot both be on — sendMessage prefers Project. */
+function reconcileExclusiveModes() {
+  if (projectMode.enabled && debateSettings.enabled) {
+    debateSettings.enabled = false;
+    saveDebateSettings();
+  }
+  updateDebateToggleUi();
+  updateProjectToggleUi();
+}
+
 function setProjectMode(on, { silent = false } = {}) {
   if (on === projectMode.enabled) {
     updateProjectToggleUi();
@@ -312,9 +337,10 @@ async function selectProject(id, { render = true } = {}) {
     projectJournal = [];
     projectMode.activeId = '';
     saveProjectModeLS();
+    if (projectMode.enabled) setProjectMode(false, { silent: true });
     renderProjectPanel();
     updateModeStrip();
-    if (render && projectMode.enabled) renderProjectThread();
+    if (render) renderHistoryFromState();
     return;
   }
   try {
@@ -391,9 +417,21 @@ function renderProjectSeats() {
   wrap.innerHTML = '';
   if (!activeProject) return;
   if (!Array.isArray(activeProject.team)) activeProject.team = [];
-  // A usable team needs 2 seats minimum — scaffold them
+  // A usable team needs 2 seats minimum — scaffold them from the current Solo
+  // model so Create → send does not fail with "has no model".
+  const seedModel = ($('#model')?.value || '').trim();
+  const seedProv = activeProviderId || providers[0]?.id || '';
   while (activeProject.team.length < 2) {
-    activeProject.team.push({ name: '', model: '', providerId: activeProviderId || providers[0]?.id || '', role: '' });
+    activeProject.team.push({
+      name: '',
+      model: seedModel,
+      providerId: seedProv,
+      role: ''
+    });
+  }
+  for (const m of activeProject.team) {
+    if (!(m.model || '').trim() && seedModel) m.model = seedModel;
+    if (!(m.providerId || '').trim() && seedProv) m.providerId = seedProv;
   }
   const multiProvider = providers.length >= 2;
 
@@ -494,4 +532,4 @@ function setProjectRun(v) { projectRun = v; return v; }
 
 function setProjectShowRoles(v) { projectShowRoles = v; return v; }
 
-export { PROJECT_MODE_KEY, activeProject, loadProjectModeLS, pjApi, pjPersistJournal, projectBusy, projectCostHintText, projectDecisions, projectJournal, projectList, projectMode, projectRun, projectSeatName, projectSeats, projectShowRoles, projectTasks, projectTeamSaveTimer, refreshProjectList, renderProjectSeats, renderProjectTasksList, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectBusy, setProjectDecisions, setProjectMode, setProjectRun, setProjectShowRoles, updateComposerPlaceholder, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi, validateProjectSetup };
+export { PROJECT_MODE_KEY, activeProject, debateExpertNames, isDebateMode, loadProjectModeLS, pjApi, pjPersistJournal, projectBusy, projectCostHintText, projectDecisions, projectJournal, projectList, projectMode, projectRun, projectSeatName, projectSeats, projectShowRoles, projectTasks, projectTeamSaveTimer, reconcileExclusiveModes, refreshEmptyWelcome, refreshProjectList, renderProjectSeats, renderProjectTasksList, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectBusy, setProjectDecisions, setProjectMode, setProjectRun, setProjectShowRoles, updateComposerPlaceholder, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi, validateProjectSetup };

@@ -122,11 +122,8 @@ function loadProviders() {
       providers = (Array.isArray(arr) ? arr : [])
         .filter((p) => p && p.id)
         .map((p) => {
-          const agent =
-            p.agent === 'claude' || p.agent === 'codex'
-              ? p.agent
-              : localAgentFromBaseURL(p.baseURL);
-          const isLocal = agent === 'claude' || agent === 'codex';
+          const agent = isKnownLocalAgent(p.agent) ? p.agent : localAgentFromBaseURL(p.baseURL);
+          const isLocal = isKnownLocalAgent(agent);
           return {
             id: String(p.id),
             name: String(p.name || ''),
@@ -180,19 +177,24 @@ function getActiveProvider() {
   );
 }
 
+const KNOWN_LOCAL_AGENTS = ['claude', 'codex', 'grok'];
+
+function isKnownLocalAgent(id) {
+  return KNOWN_LOCAL_AGENTS.includes(String(id || '').trim().toLowerCase());
+}
+
 function localAgentFromBaseURL(baseURL) {
   const base = String(baseURL || '')
     .trim()
     .replace(/\/+$/, '')
     .toLowerCase();
-  if (base === 'tarka-local://claude') return 'claude';
-  if (base === 'tarka-local://codex') return 'codex';
-  return null;
+  const m = /^tarka-local:\/\/([a-z0-9-]+)$/.exec(base);
+  return m && isKnownLocalAgent(m[1]) ? m[1] : null;
 }
 
 function localAgentId(p) {
   if (!p) return null;
-  if (p.agent === 'claude' || p.agent === 'codex') return p.agent;
+  if (isKnownLocalAgent(p.agent)) return String(p.agent).trim().toLowerCase();
   return localAgentFromBaseURL(p.baseURL);
 }
 
@@ -227,4 +229,4 @@ function providerAccessIssue(p, label) {
 function setActiveProviderId(v) { activeProviderId = v; return v; }
 function setProviders(v) { providers = v; return v; }
 
-export { ACTIVE_PROVIDER_KEY, PROVIDERS_KEY, activeProviderId, declaredContextFor, formatDeclaredModels, getActiveProvider, isLocalProvider, loadProviders, localAgentFromBaseURL, localAgentId, localProfileReady, localProviderNeedsKey, newProviderId, normalizeDeclaredModels, parseDeclaredModels, providerAccessIssue, providerHostname, providers, saveProviders, setActiveProviderId, setProviders };
+export { ACTIVE_PROVIDER_KEY, KNOWN_LOCAL_AGENTS, PROVIDERS_KEY, activeProviderId, declaredContextFor, formatDeclaredModels, getActiveProvider, isKnownLocalAgent, isLocalProvider, loadProviders, localAgentFromBaseURL, localAgentId, localProfileReady, localProviderNeedsKey, newProviderId, normalizeDeclaredModels, parseDeclaredModels, providerAccessIssue, providerHostname, providers, saveProviders, setActiveProviderId, setProviders };

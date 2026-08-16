@@ -153,7 +153,76 @@ function pjElide(text, max = 12_000) {
   if (s.length <= max) return s;
   const head = s.slice(0, Math.floor(max * 0.75));
   const tail = s.slice(-Math.floor(max * 0.2));
-  return `${head}\n…[${s.length - head.length - tail.length} chars elided — read a narrower range if needed]…\n${tail}`;
+  const omitted = s.length - head.length - tail.length;
+  return (
+    `${head}\n…[${omitted} chars elided — re-read the file or re-run a narrower command to recover the middle]…\n${tail}`
+  );
+}
+
+/** Deep key-sort so two arg objects that differ only in key order match. */
+function stableToolArgs(value) {
+  if (Array.isArray(value)) return value.map(stableToolArgs);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value).sort()) out[k] = stableToolArgs(value[k]);
+    return out;
+  }
+  return value;
+}
+
+/** Identity of one Project tool call — same tool + same args is one call. */
+function projectToolCallKey(tool, args) {
+  return `${String(tool || '')}:${JSON.stringify(stableToolArgs(args || {}))}`;
+}
+
+/**
+ * Full call identity from the parsed fence — not the journal-facing args.
+ * write/append/edit must include content/edits, or two different writes to
+ * the same path collapse into a false REPEAT.
+ */
+function projectToolCallPayload(block) {
+  if (!block || typeof block !== 'object') return {};
+  if (block.kind === 'write' || block.kind === 'append') {
+    return { path: block.path || '', content: block.content || '' };
+  }
+  if (block.kind === 'edit') {
+    return { path: block.path || '', edits: block.edits || [] };
+  }
+  if (block.kind === 'tool' && block.spec && typeof block.spec === 'object') {
+    const spec = { ...block.spec };
+    delete spec.tool;
+    return spec;
+  }
+  return {};
+}
+
+/**
+ * A repeated identical tool call is not fresh progress. `seen` is a Map of
+ * key → prior preview; the first sighting is recorded, later ones are repeats.
+ */
+function noteRepeatToolCall(seen, key, preview) {
+  const map = seen instanceof Map ? seen : new Map();
+  if (map.has(key)) return { repeat: true, prior: map.get(key), seen: map };
+  map.set(key, String(preview == null ? '' : preview).replace(/\s+/g, ' ').slice(0, 160));
+  return { repeat: false, prior: null, seen: map };
+}
+
+/**
+ * Orthogonal command outcome. A timeout or signal is not a clean success
+ * even when the process still exits 0.
+ */
+function commandExitFacts({ timedOut = false, signal = null, exitCode = null, aborted = false } = {}) {
+  const code = exitCode == null || exitCode === '' ? null : Number(exitCode);
+  const sig = signal || null;
+  const timed = !!timedOut;
+  const stop = !!aborted;
+  return {
+    timedOut: timed,
+    signal: sig,
+    exitCode: Number.isFinite(code) ? code : null,
+    aborted: stop,
+    cleanSuccess: !timed && !stop && !sig && code === 0
+  };
 }
 
 /* ---------- prompts ---------- */
@@ -420,5 +489,6 @@ export {
   PJ_FENCE_RE, PJ_TURN_RE, PJ_TURN_SCAN_RE, parseAgentResponse, pjDisplayable, pjElide,
   buildProjectSystemPrompt, pjJournalLineForPrompt, pjToolLabel,
   PJ_WORK_TOOLS, PJ_INSPECT_TOOLS, PJ_SESSION_WORK_TOOLS, pjTrimConvo,
-  recordProjectToolEvidence, evaluateProjectDoneClaim, resolveProjectNextSeat
+  recordProjectToolEvidence, evaluateProjectDoneClaim, resolveProjectNextSeat,
+  projectToolCallKey, projectToolCallPayload, noteRepeatToolCall, commandExitFacts
 };

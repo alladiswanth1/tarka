@@ -107,7 +107,7 @@ async function route(req, res) {
 
     if (url.pathname === '/api/agents/local' && req.method === 'GET') {
       if (!isLoopbackRemote(req)) {
-        return sendJsonRes(res, 403, { error: 'Local Claude / Codex agents are available from this machine only' });
+        return sendJsonRes(res, 403, { error: 'Local Claude / Codex / Grok Build agents are available from this machine only' });
       }
       try {
         const agents = await detectLocalAgents();

@@ -65,6 +65,8 @@ let dockedArena = null;
 /** Cached project file listing for the workspace pane */
 let projectFiles = [];
 
+let projectFilesError = '';
+
 let projectFilesInflight = false;
 
 let projectTurnNow = 0;
@@ -209,9 +211,19 @@ function dockArenaIntoMessage() {
   clearInspectorArena();
 }
 
-/** Inspector hidden or window narrowed mid-debate → fall back to inline */
+/** Inspector hidden or window narrowed mid-debate → fall back to inline.
+ * Opening the inspector mid-debate remounts a live arena that was inline. */
 function reflowArena() {
-  if (!dockedArena || inspectorVisible()) return;
+  if (inspectorVisible()) {
+    if (dockedArena) return;
+    const live = document.querySelector('#messages .debate-panel.thinking');
+    if (!live) return;
+    const msgBody = live.closest('.msg-body');
+    const bubble = msgBody?.querySelector('.bubble');
+    if (msgBody && bubble) mountArena(live, msgBody, bubble);
+    return;
+  }
+  if (!dockedArena) return;
   const { el, msgBody, bubble, ref } = dockedArena;
   dockedArena = null;
   if (ref && ref.parentNode) ref.remove();
@@ -243,8 +255,10 @@ async function refreshProjectFiles() {
   try {
     const data = await pjApi('/api/project/fs', { id: activeProject.id, op: 'list', path: '' });
     projectFiles = (data.result?.entries || []).slice(0, 300);
-  } catch {
+    projectFilesError = '';
+  } catch (e) {
     projectFiles = [];
+    projectFilesError = e.message || 'list failed';
   } finally {
     projectFilesInflight = false;
   }
@@ -257,6 +271,10 @@ function renderProjectTree() {
   wrap.innerHTML = '';
   if (!activeProject) {
     wrap.innerHTML = '<div class="tree-empty">No project selected</div>';
+    return;
+  }
+  if (projectFilesError) {
+    wrap.innerHTML = '<div class="tree-empty">Couldn’t list files — tap refresh</div>';
     return;
   }
   if (!projectFiles.length) {
@@ -374,8 +392,13 @@ function initInspector() {
   $('#railCmdk')?.addEventListener('click', () => openCmdk());
 
   document.querySelectorAll('.insp-tab').forEach((tab) => {
+    tab.setAttribute('aria-selected', tab.classList.contains('on') ? 'true' : 'false');
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.insp-tab').forEach((t) => t.classList.toggle('on', t === tab));
+      document.querySelectorAll('.insp-tab').forEach((t) => {
+        const on = t === tab;
+        t.classList.toggle('on', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
       document.querySelectorAll('[data-ppane]').forEach((pane) => {
         pane.hidden = pane.dataset.ppane !== tab.dataset.ptab;
       });

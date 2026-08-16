@@ -12,12 +12,12 @@
 import { scheduleComposerDraftSave, sendMessage } from './src/compose.js';
 import { getConfig, loadConfig, saveConfig, scheduleConfigAutosave } from './src/config.js';
 import { detectContextFromProvider, loadProviderContextCache, scheduleContextDetect, updateContextUI } from './src/context.js';
-import { debateSettings, loadDebateSettings, loadDebateTeamById, markDebateCustom, newTeamId, saveDebateSettings, saveDebateTeams, snapshotDebateTeamConfig, updateDebateTeamsUi } from './src/debate/settings.js';
+import { debateSettings, loadDebateSettings, loadDebateTeamById, markDebateCustom, newTeamId, saveDebateSettings, saveDebateTeams, setDebateMode, snapshotDebateTeamConfig, updateDebateTeamsUi } from './src/debate/settings.js';
 import { renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from './src/debate/ui.js';
 import { exportChat } from './src/export.js';
 import { attachModelPicker, favoriteId, loadSavedModels, saveSavedModels, updateModelWarnings } from './src/models.js';
 import { renderProjectPanel, renderProjectThread } from './src/project/journal.js';
-import { activeProject, loadProjectModeLS, pjApi, projectBusy, projectCostHintText, projectJournal, projectList, projectMode, projectTasks, refreshProjectList, renderProjectSeats, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectMode, setProjectShowRoles, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi } from './src/project/state.js';
+import { activeProject, loadProjectModeLS, pjApi, projectBusy, projectCostHintText, projectJournal, projectList, projectMode, projectTasks, reconcileExclusiveModes, refreshProjectList, renderProjectSeats, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectMode, setProjectShowRoles, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi } from './src/project/state.js';
 import { syncLocalAgentProviders } from './src/localAgents.js';
 import { activeProviderId, loadProviders, providers } from './src/providers.js';
 import { initSessions, loadHistory, renderHistoryFromState, renderSessionList } from './src/sessions.js';
@@ -28,6 +28,7 @@ import { DRAWER_KEY, initInspector } from './src/ui/inspector.js';
 import { primeMarks } from './src/ui/mark.js';
 import { closeProviderEditor, deleteProviderFromEditor, editingProviderId, openProviderEditor, renderProviders, saveProviderFromEditor, updateTopbar } from './src/ui/providers.js';
 import { autoResize, closeSidebar, initSidebarTabs, newChat, openSidebar, setSidebarPanel, syncRail } from './src/ui/sidebar.js';
+import { initViewportInsets } from './src/ui/viewport.js';
 import { READY_STATUS, appendError, clearStreamUnread, editUserMessage, flashStatus, isNearBottom, regenerate, scrollFab, scrollToBottom, setStickToBottom, setStreamingUi, stickToBottom, stopStreaming, updateScrollFab } from './src/ui/transcript.js';
 import { estimateTokens } from './src/tokens.js';
 import { renderMarkdown } from './src/markdown.js';
@@ -42,7 +43,7 @@ userInput.addEventListener('keydown', (e) => {
     // Enter confirming an IME composition (CJK input) must not send
     if (e.isComposing || e.keyCode === 229) return;
     e.preventDefault();
-    if (!isStreaming) sendMessage();
+    sendMessage();
   }
   if (e.key === 'Escape' && isStreaming) {
     stopStreaming();
@@ -285,17 +286,11 @@ $('#providerEditor')?.addEventListener('keydown', (e) => {
 
 // Debate mode events
 $('#debateToggle')?.addEventListener('click', () => {
-  debateSettings.enabled = !debateSettings.enabled;
-  if (debateSettings.enabled && projectMode.enabled) {
-    setProjectMode(false, { silent: true });
-  }
-  saveDebateSettings(); // toggle persists immediately
-  updateDebateToggleUi();
+  setDebateMode(!debateSettings.enabled);
   if (debateSettings.enabled) {
     openSidebar();
     setSidebarPanel('debate');
   }
-  flashStatus(debateSettings.enabled ? 'Debate mode on — describe the task' : 'Debate mode off');
 });
 
 // Project mode events
@@ -346,7 +341,7 @@ $('#projCreateConfirm')?.addEventListener('click', async () => {
       folder,
       team: [
         { name: '', model: getConfig().model || '', providerId: activeProviderId || providers[0]?.id || '', role: '' },
-        { name: '', model: '', providerId: activeProviderId || providers[0]?.id || '', role: '' }
+        { name: '', model: getConfig().model || '', providerId: activeProviderId || providers[0]?.id || '', role: '' }
       ]
     });
     $('#projectCreateForm').hidden = true;
@@ -595,6 +590,8 @@ loadProviderContextCache();
 loadProviders(); // before loadConfig/updateTopbar — both read the active provider
 loadDebateSettings(); // before renderProviders — it re-renders the debate seats
 loadConfig();
+loadProjectModeLS();
+reconcileExclusiveModes();
 loadSavedModels(); // favorites migration + recents + catalog cache
 // Main model combo (scoped to active provider)
 attachModelPicker($('#model'), {
@@ -624,9 +621,9 @@ if (loadHistory()) {
   renderHistoryFromState();
 }
 // Project mode: restore list + active project (async; view swaps in when ready)
-loadProjectModeLS();
 updateProjectToggleUi();
 initInspector();
+initViewportInsets();
 (async () => {
   await refreshProjectList();
   if (projectMode.activeId && projectList.some((p) => p.id === projectMode.activeId)) {
@@ -648,7 +645,7 @@ primeMarks();
 scheduleContextDetect();
 restoreComposerDraft();
 updateContextUI();
-userInput.focus();
+if (!mobileMq.matches) userInput.focus();
 
 // The rail is the primary navigation, so the settings drawer starts closed
 // unless it was left open on this device.

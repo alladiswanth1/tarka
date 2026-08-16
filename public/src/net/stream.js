@@ -88,11 +88,15 @@ async function streamCompletion({
     systemPrompt
   };
   const fromField = String(agent || '').trim().toLowerCase();
-  if (fromField === 'claude' || fromField === 'codex') body.agent = fromField;
-  else {
-    const a = String(baseURL || '').trim().toLowerCase();
-    if (a === 'tarka-local://claude') body.agent = 'claude';
-    if (a === 'tarka-local://codex') body.agent = 'codex';
+  if (fromField === 'claude' || fromField === 'codex' || fromField === 'grok') {
+    body.agent = fromField;
+  } else {
+    const a = String(baseURL || '')
+      .trim()
+      .replace(/\/+$/, '')
+      .toLowerCase();
+    const m = /^tarka-local:\/\/([a-z0-9-]+)$/.exec(a);
+    if (m && (m[1] === 'claude' || m[1] === 'codex' || m[1] === 'grok')) body.agent = m[1];
   }
 
   const res = await fetch('/api/chat', {

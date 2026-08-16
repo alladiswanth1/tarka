@@ -57,7 +57,7 @@ the `.catch()`; don't make the outer callback async again.
 | `http.js` | body parsing, static files, SSE writes, JSON replies |
 | `security.js` | the trust boundary: `isPrivateIp`, host/origin/CSRF checks, SSRF containment, DNS pinning |
 | `proxy.js` | `handleChat` (streaming + the provider-compat ladder), `handleModels` |
-| `local-agents.js` | detect + spawn Claude Code / Codex CLIs as keyless providers |
+| `local-agents.js` | detect + spawn Claude Code / Codex / Grok Build CLIs as keyless providers. Grok is prompted via `--prompt-file` (it does not read stdin) and streamed as `streaming-json`. |
 | `project/paths.js` | `validateProjectFolder`, `resolveInside` — path containment |
 | `project/fs.js` | file operations, all routed through `resolveInside` |
 | `project/exec.js` | shell execution: timeout, output caps, process-group kill |
