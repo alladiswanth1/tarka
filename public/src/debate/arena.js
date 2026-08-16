@@ -8,7 +8,7 @@ import { createReasoningPanel, destroyReasoningPanel, finalizeReasoningPanel, fo
  * The debate arena reuses the reasoning-panel shell (animated gradient border,
  * orb, shimmer, grid-rows drawer) with debate-specific chips/transcript inside.
  */
-function createDebateArena(seats, maxRounds) {
+function createDebateArena(seats, maxRounds, { auto = false } = {}) {
   const panel = document.createElement('div');
   panel.className = 'reasoning-panel debate-panel thinking open';
   panel.dataset.open = 'true';
@@ -86,7 +86,9 @@ function createDebateArena(seats, maxRounds) {
     startedAt,
     finalized: false,
     setRound(r) {
-      titleEl.textContent = `Team debating · Round ${r}/${maxRounds}`;
+      titleEl.textContent = auto
+        ? `Team debating · Round ${r} · auto`
+        : `Team debating · Round ${r}/${maxRounds}`;
     },
     setSpeaking(i) {
       panel.querySelectorAll('.debate-chip').forEach((c) => {

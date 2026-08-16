@@ -83,6 +83,10 @@ test('UI chrome still has the local-agent list and distinct Solo / Debate / Proj
   assert.match(app, /setDebateMode/);
   assert.match(app, /reconcileExclusiveModes/);
   assert.match(app, /initViewportInsets/);
+  assert.match(html, /id="debateRoundMode"/);
+  const engine = fs.readFileSync(path.join(__dirname, '..', 'public', 'src', 'debate', 'engine.js'), 'utf8');
+  assert.match(engine, /writeUpAfterStop/);
+  assert.match(engine, /debateRoundBudget/);
 });
 
 test('setup failures return before the composer draft is cleared', () => {

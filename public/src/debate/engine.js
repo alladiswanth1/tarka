@@ -1,6 +1,6 @@
 import { contextLimitFor, getContextUsage, updateContextUI } from '../context.js';
 import { buildDebateCredit, createDebateArena } from '../debate/arena.js';
-import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, applyDebateVote, buildDebateTurnMessage, debateAnswerAttribution, debateHasConsensus, debateLiveSeats, discardOpeningVotes, dropDebateSeat, expertSystemPrompt, formatDebateTranscript, joinNames, judgeSystemPrompt, parseDebateStatus, pickDebatePresenter, presenterSystemPrompt, stripStreamingStatusTail } from '../debate/protocol.js';
+import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, applyDebateVote, buildDebateTurnMessage, debateAnswerAttribution, debateHasConsensus, debateLiveSeats, debateRoundBudget, discardOpeningVotes, dropDebateSeat, expertSystemPrompt, formatDebateTranscript, joinNames, judgeSystemPrompt, parseDebateStatus, pickDebatePresenter, presenterSystemPrompt, stripStreamingStatusTail } from '../debate/protocol.js';
 import { debateSettings } from '../debate/settings.js';
 import { validateDebateSetup } from '../debate/ui.js';
 import { pushHistoryMessage, scheduleHistorySave } from '../history.js';
@@ -77,6 +77,10 @@ async function runDebate(cfg, task) {
     return;
   }
   const expertEffort = ds.expertReasoning === 'inherit' ? cfg.reasoningEffort : 'none';
+  // Snapshot so flipping Auto mid-run cannot stretch or cut this debate.
+  const roundMode = ds.roundMode === 'auto' ? 'auto' : 'fixed';
+  const autoRounds = roundMode === 'auto';
+  const maxRounds = debateRoundBudget({ roundMode, maxRounds: ds.maxRounds });
 
   // Learn every seat model's real context window before the first trim decision
   // is made. Cached per provider for an hour, so this is usually free; without
@@ -103,13 +107,13 @@ async function runDebate(cfg, task) {
 
   const { msgEl, bubble, body: msgBody } = appendMessage('assistant', '', true);
   bubble.classList.add('hidden-until-content');
-  const arena = createDebateArena(seats, ds.maxRounds);
+  const arena = createDebateArena(seats, maxRounds, { auto: autoRounds });
   // Live arena goes to the inspector (falls back inline when it isn't visible)
   mountArena(arena.el, msgBody, bubble);
   scrollToBottom();
 
   setAbortController(new AbortController());
-  const signal = abortController.signal;
+  let signal = abortController.signal;
 
   const prior = buildDebatePriorContext();
   const transcript = []; // { name, text, seatIdx, round }
@@ -209,11 +213,11 @@ async function runDebate(cfg, task) {
    */
   const runSeatTurn = async (seat, round, turnUi) => {
     const blind = round === 1;
-    const finalRound = !blind && round === ds.maxRounds;
+    const finalRound = !blind && round === maxRounds;
     // Address only the experts still in the room — a dropped seat is not
     // a colleague whose silence needs explaining.
     const roster = liveSeats().length >= 2 ? liveSeats() : seats;
-    const sys = expertSystemPrompt(seat, roster, { blind, finalRound });
+    const sys = expertSystemPrompt(seat, roster, { blind, finalRound, auto: autoRounds });
     const userMsg = buildDebateTurnMessage({
       task,
       prior,
@@ -306,7 +310,7 @@ async function runDebate(cfg, task) {
     // Round 1 is BLIND and PARALLEL: no seat sees the others, so all experts
     // stream their independent takes concurrently (≈N× faster wall-clock).
     // Later rounds are strict round-robin over the shared transcript.
-    outer: for (let round = 1; round <= ds.maxRounds; round++) {
+    outer: for (let round = 1; round <= maxRounds; round++) {
       roundsRun = round;
       arena.setRound(round);
       // Always show a divider; round 1 labeled "independent takes"
@@ -359,9 +363,11 @@ async function runDebate(cfg, task) {
         for (const s of liveSeats()) {
           arena.setSeatStatus(s.i, false);
         }
-        if (ds.maxRounds > 1) {
+        if (maxRounds > 1) {
           arena.addNote(
-            'Independent takes are in. Nobody has read anyone else yet, so agreement starts counting from the next round.'
+            autoRounds
+              ? 'Independent takes are in. The team will keep going until they agree the problem is solved — or you stop them.'
+              : 'Independent takes are in. Nobody has read anyone else yet, so agreement starts counting from the next round.'
           );
         }
         continue;
@@ -419,16 +425,20 @@ async function runDebate(cfg, task) {
           ? `✓ Full consensus — ${joinNames(live.map((s) => s.name))} agree. Moving to the final answer.`
           : live.length < 2
             ? 'The final answer will be written from the takes that did arrive.'
-            : `Round limit reached (${roundsRun}/${ds.maxRounds}) without full consensus — the final answer will resolve the remaining disagreements.`
+            : autoRounds
+              ? `Safety cap reached (${roundsRun} rounds) without full consensus — writing the best answer from the discussion.`
+              : `Round limit reached (${roundsRun}/${maxRounds}) without full consensus — the final answer will resolve the remaining disagreements.`
       );
     }
 
-    // ---- Abort before any answer: keep transcript when one exists ----
-    if (stopped) {
+    // Auto + user stop: deliver a final answer from whatever landed.
+    // Fixed mode keeps the old orphan/unwind path so a cancelled fixed
+    // debate does not silently invent a write-up the user did not ask for.
+    const writeUpAfterStop = !!(stopped && autoRounds && transcript.length > 0);
+    if (stopped && !writeUpAfterStop) {
       arena.finalize({ rounds: roundsRun, presenter: null, consensus, stopped: true });
       statusText.classList.remove('thinking-status');
       if (transcript.length === 0) {
-        // Nothing completed — unwind like a normal-chat cancel
         unwindLastUserExchange(msgEl, true);
         statusText.textContent = 'Cancelled';
       } else {
@@ -437,6 +447,14 @@ async function runDebate(cfg, task) {
         statusText.textContent = 'Stopped';
       }
       return;
+    }
+    if (writeUpAfterStop) {
+      arena.addNote('You stopped the debate — writing the final answer from the discussion so far.');
+      // Esc aborted the in-flight fetch. A new controller lets the presenter
+      // stream; Esc again still stops the write-up.
+      const next = new AbortController();
+      setAbortController(next);
+      signal = next.signal;
     }
 
     // ---- Final answer: nominated expert (default) OR neutral judge ----
@@ -480,7 +498,10 @@ async function runDebate(cfg, task) {
       arena.setPresenting(presenter);
       statusText.textContent = `${presenter.name} writing the final answer…`;
       setCredit(presenter.name, creditOpts);
-      const presSys = presenterSystemPrompt(presenter, finalRoster, { consensus });
+      const presSys = presenterSystemPrompt(presenter, finalRoster, {
+        consensus,
+        interrupted: writeUpAfterStop
+      });
       const presMsg = buildDebateTurnMessage({
         task,
         prior,
@@ -499,7 +520,7 @@ async function runDebate(cfg, task) {
       statusText.textContent = `${finalLabel} writing the final answer…`;
       creditOpts = { mode: 'judge', model: judgeSeat.model };
       setCredit(finalLabel, creditOpts);
-      const judgeSys = judgeSystemPrompt(finalRoster);
+      const judgeSys = judgeSystemPrompt(finalRoster, { interrupted: writeUpAfterStop });
       const judgeMsg = buildDebateTurnMessage({
         task,
         prior,
@@ -684,7 +705,14 @@ async function runDebate(cfg, task) {
     }
 
     // ---- Success: only the final answer enters history ----
-    const stored = stopped && finalContent ? `${finalContent}\n\n*[stopped]*` : finalContent;
+    // *[stopped]* only if the WRITE-UP itself was cut off. An Auto interrupt
+    // that then finished the presenter is a real answer, just early.
+    const stored =
+      presResult || !stopped
+        ? finalContent
+        : finalContent
+          ? `${finalContent}\n\n*[stopped]*`
+          : finalContent;
     const m = pushHistoryMessage('assistant', stored);
     // The final writer's chain of thought is restored from history exactly like
     // a solo reply's (sessions.js rebuilds the panel when `reasoning` is set) —
@@ -716,7 +744,12 @@ async function runDebate(cfg, task) {
       errored
     });
     statusText.classList.remove('thinking-status');
-    statusText.textContent = stopped ? 'Stopped' : READY_STATUS;
+    statusText.textContent =
+      writeUpAfterStop && presResult
+        ? 'Stopped — final answer written'
+        : stopped
+          ? 'Stopped'
+          : READY_STATUS;
     updateContextUI();
   } catch (err) {
     if (isStale()) return;

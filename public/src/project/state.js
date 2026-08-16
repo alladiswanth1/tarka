@@ -240,7 +240,7 @@ function updateModeStrip() {
     };
     mk('⚔ Debate', 'mode-chip-label debate');
     mk(`${n} experts`, 'mode-chip-strong');
-    mk(`${debateSettings.maxRounds} rounds`);
+    mk(debateSettings.roundMode === 'auto' ? 'auto rounds' : `${debateSettings.maxRounds} rounds`);
     mk(`final: ${fin}`);
     solo.hidden = true;
     strip.hidden = false;

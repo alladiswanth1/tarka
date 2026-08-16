@@ -277,6 +277,12 @@ runDebate(cfg, task)                              engine.js
   final answer: nominated expert OR neutral judge
 ```
 
+Optional **Auto** rounds (`roundMode: 'auto'`): the loop uses a safety cap
+(`DEBATE_AUTO_MAX_ROUNDS`) instead of the user's N. Consensus still ends it.
+Esc mid-discussion still writes the final answer from the harvested transcript
+(a fresh AbortController, because the first one died with the in-flight seat).
+Fixed mode keeps the old stop path (orphan / unwind).
+
 | File | Holds |
 |---|---|
 | `protocol.js` | prompts + the status-line contract. **Pure — unit-testable in plain Node** |
