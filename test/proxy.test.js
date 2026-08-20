@@ -14,8 +14,26 @@ const {
   splitModelId,
   modelIdsRelated,
   pickContextLength,
-  decodeBody
+  decodeBody,
+  formatUpstreamHttpError
 } = require('../lib/proxy');
+
+test('formatUpstreamHttpError keeps the HTTP status on the client string', () => {
+  assert.equal(
+    formatUpstreamHttpError(400, JSON.stringify({ error: { message: 'model temporarily unavailable' } })),
+    'Upstream HTTP 400: model temporarily unavailable'
+  );
+  assert.equal(
+    formatUpstreamHttpError(500, JSON.stringify({ error: { message: 'Internal Server Error' } })),
+    'Upstream HTTP 500: Internal Server Error'
+  );
+  assert.equal(formatUpstreamHttpError(503, 'Bad Gateway'), 'Upstream HTTP 503: Bad Gateway');
+  assert.equal(formatUpstreamHttpError(502, ''), 'Upstream HTTP 502');
+  assert.equal(
+    formatUpstreamHttpError(402, JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } })),
+    'Upstream HTTP 402: Insufficient credits'
+  );
+});
 
 test('normalizeBaseUrl trims slashes and a pasted /chat/completions', () => {
   assert.equal(normalizeBaseUrl('https://openrouter.ai/api/v1'), 'https://openrouter.ai/api/v1');

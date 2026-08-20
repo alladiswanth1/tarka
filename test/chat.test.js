@@ -8,6 +8,8 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const path = require('path');
+const { pathToFileURL } = require('url');
 
 const {
   startMockProvider,
@@ -19,8 +21,10 @@ const {
 } = require('./helpers/harness');
 
 let tarka;
+let retry;
 test.before(async () => {
   tarka = await startTarka();
+  retry = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'src', 'net', 'retry.js')).href);
 });
 test.after(async () => {
   if (tarka) await tarka.close();
@@ -292,17 +296,67 @@ test('a non-streaming JSON reply is still surfaced', async () => {
   }
 });
 
-test('a provider error message reaches the user verbatim', async () => {
+test('a provider error message reaches the user with its HTTP status', async () => {
   const provider = await startMockProvider((req, res) => {
     res.writeHead(402, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   });
   try {
     const out = await readSse(await chat(provider));
-    assert.deepEqual(out.errors, ['Insufficient credits']);
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /HTTP 402/);
+    assert.match(out.errors[0], /Insufficient credits/);
     assert.equal(provider.requests.length, 1, 'a 402 is not a parameter problem — no retry');
+    assert.equal(
+      retry.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: out.errors[0] }),
+      false
+    );
   } finally {
     await provider.close();
+  }
+});
+
+/*
+ * The JSON body often has no status code. Dropping `Upstream HTTP ${status}`
+ * made a 400 "temporarily unavailable" look retryable and a 500
+ * "Internal Server Error" look permanent. Solo classifies this exact string.
+ */
+test('upstream 4xx/5xx errors keep HTTP status so Solo retry classifies the live string', async () => {
+  const four = await startMockProvider((req, res) => {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'model temporarily unavailable' } }));
+  });
+  try {
+    const out = await readSse(await chat(four));
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /HTTP 400/);
+    assert.match(out.errors[0], /temporarily unavailable/);
+    assert.equal(
+      retry.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: out.errors[0] }),
+      false,
+      '4xx refusals are not retried even with transient wording'
+    );
+    assert.equal(four.requests.length, 1, 'proxy itself does not retry a non-parameter 400');
+  } finally {
+    await four.close();
+  }
+
+  const five = await startMockProvider((req, res) => {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'Internal Server Error' } }));
+  });
+  try {
+    const out = await readSse(await chat(five));
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /HTTP 500/);
+    assert.match(out.errors[0], /Internal Server Error/);
+    assert.equal(
+      retry.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: out.errors[0] }),
+      true,
+      '5xx must retry even when the body names no status code'
+    );
+  } finally {
+    await five.close();
   }
 });
 
@@ -316,7 +370,8 @@ test('the TokenRouter error envelope is unwrapped correctly', async () => {
   });
   try {
     const out = await readSse(await chat(provider));
-    assert.match(out.errors[0], /^Token not provided/);
+    assert.match(out.errors[0], /HTTP 401/);
+    assert.match(out.errors[0], /Token not provided/);
   } finally {
     await provider.close();
   }

@@ -59,9 +59,9 @@ test('the shipped classifier retries 429 / 5xx / timeout / network, not a 402-cl
     'invalid api key',
     'model not found',
     // A 4xx status is a refusal even when the body uses transient language.
-    'HTTP 400: model temporarily unavailable',
-    'HTTP 403 service unavailable',
-    '404 timeout looking up that model'
+    'Upstream HTTP 400: model temporarily unavailable',
+    'Upstream HTTP 403 service unavailable',
+    'Upstream HTTP 404 timeout looking up that model'
   ];
   for (const msg of no) {
     assert.equal(R.isTransientProviderError(msg), false, msg);
@@ -106,7 +106,7 @@ test('the shipped retry policy retries only when streamed answer text is still e
     R.shouldRetryStream({
       attempt: 1,
       streamedAnswer: '',
-      error: 'HTTP 400: model temporarily unavailable'
+      error: 'Upstream HTTP 400: model temporarily unavailable'
     }),
     false,
     '4xx refusals are not retried even with transient wording'
