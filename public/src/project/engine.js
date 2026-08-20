@@ -3,7 +3,7 @@ import { localAgentId } from '../providers.js';
 import { pushRecentModel, warmProviderCatalogs } from '../models.js';
 import { isTransientProviderError, sleep, streamCompletion } from '../net/stream.js';
 import { pjEmit, pjToolCardDom, pjToolLabel, pjTurnShellDom } from '../project/journal.js';
-import { buildProjectSystemPrompt, evaluateProjectDoneClaim, noteRepeatToolCall, parseAgentResponse, pjDisplayable, pjElide, pjJournalLineForPrompt, pjTrimConvo, projectToolCallKey, projectToolCallPayload, recordProjectToolEvidence, resolveProjectNextSeat } from '../project/protocol.js';
+import { buildProjectSystemPrompt, evaluateProjectDoneClaim, noteRepeatToolCall, parseAgentResponse, pjDisplayable, pjElide, pjJournalLineForPrompt, pjTrimConvo, projectToolCallKey, projectToolCallPayload, projectToolResultCounts, recordProjectToolEvidence, resolveProjectNextSeat } from '../project/protocol.js';
 import { activeProject, pjApi, pjPersistJournal, projectDecisions, projectJournal, projectRun, projectSeats, projectTasks, renderProjectTasksList, setProjectBusy, setProjectRun, updateModeStrip } from '../project/state.js';
 import { executeAgentBlock } from '../project/tools.js';
 import { abortController, messagesEl, setAbortController, statusText, userInput } from '../state.js';
@@ -245,8 +245,13 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
       // Listing counts as looking, but not as having built anything — see
       // recordProjectToolEvidence / PJ_SESSION_WORK_TOOLS.
       const callKey = projectToolCallKey(out.tool, projectToolCallPayload(block));
-      const repeat = noteRepeatToolCall(seenToolCalls, callKey, out.detail);
-      if (!repeat.repeat) recordProjectToolEvidence(out, did);
+      // Failures must not occupy the repeat slot — a later success of the
+      // same call is still inspection/work. Only counting results are noted.
+      let repeat = { repeat: false, prior: null };
+      if (projectToolResultCounts(out)) {
+        repeat = noteRepeatToolCall(seenToolCalls, callKey, out.detail);
+        if (!repeat.repeat) recordProjectToolEvidence(out, did);
+      }
       const resultBody = pjElide(out.convo, resultCap);
       convoResults.push(
         repeat.repeat

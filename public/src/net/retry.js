@@ -21,11 +21,26 @@ function errorMessage(err) {
   return String(err.message || err.error || err);
 }
 
+/** 4xx codes named in a message, so "HTTP 400: unavailable" is still a refusal. */
+function named4xx(msg) {
+  const codes = [];
+  const re = /(^|\D)(4\d{2})(\D|$)/g;
+  for (let m; (m = re.exec(msg)); ) {
+    codes.push(m[2]);
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  return codes;
+}
+
 function isTransientProviderError(err) {
   const msg = errorMessage(err);
   if (!msg) return false;
   // A 402-class refusal is not a blip, even if the body also says "unavailable".
   if (PAYMENT_REFUSAL_RE.test(msg)) return false;
+  // Other 4xx (except 429 rate-limit) are request refusals. "temporarily
+  // unavailable" in a 400/403/404 body must not flip them into a retry.
+  const fours = named4xx(msg);
+  if (fours.some((c) => c !== '429')) return false;
   return TRANSIENT_ERROR_RE.test(msg);
 }
 
@@ -56,7 +71,9 @@ function shouldRetryStream({
  */
 function soloAssistantDisposition({ fullContent, reasoningContent } = {}) {
   const text = String(fullContent || '');
-  if (text) {
+  // Whitespace-only is empty: some providers reject a blank assistant turn
+  // on the next request the same way they reject "".
+  if (text.trim()) {
     return { persist: true, display: 'content', content: text };
   }
   if (reasoningContent) {

@@ -54,8 +54,14 @@ test('the shipped classifier retries 429 / 5xx / timeout / network, not a 402-cl
     'HTTP 400 Bad Request',
     'HTTP 401 Unauthorized',
     'HTTP 403 Forbidden',
+    'HTTP 404 Not Found',
+    'HTTP 422 Unprocessable Entity',
     'invalid api key',
-    'model not found'
+    'model not found',
+    // A 4xx status is a refusal even when the body uses transient language.
+    'HTTP 400: model temporarily unavailable',
+    'HTTP 403 service unavailable',
+    '404 timeout looking up that model'
   ];
   for (const msg of no) {
     assert.equal(R.isTransientProviderError(msg), false, msg);
@@ -96,6 +102,20 @@ test('the shipped retry policy retries only when streamed answer text is still e
     false
   );
   assert.equal(R.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: '' }), false);
+  assert.equal(
+    R.shouldRetryStream({
+      attempt: 1,
+      streamedAnswer: '',
+      error: 'HTTP 400: model temporarily unavailable'
+    }),
+    false,
+    '4xx refusals are not retried even with transient wording'
+  );
+  assert.equal(
+    R.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: 'HTTP 429 Too Many Requests' }),
+    true,
+    '429 remains the retryable 4xx'
+  );
 });
 
 test('empty and reasoning-only Solo replies do not persist assistant content', () => {
@@ -116,4 +136,15 @@ test('empty and reasoning-only Solo replies do not persist assistant content', (
   assert.equal(ok.persist, true);
   assert.equal(ok.display, 'content');
   assert.equal(ok.content, 'Here is the answer.');
+
+  const blank = R.soloAssistantDisposition({ fullContent: '  \n\t  ', reasoningContent: '' });
+  assert.equal(blank.persist, false, 'whitespace-only is an empty reply');
+  assert.equal(blank.display, 'empty');
+
+  const blankThink = R.soloAssistantDisposition({
+    fullContent: '\n  ',
+    reasoningContent: 'chain of thought…'
+  });
+  assert.equal(blankThink.persist, false);
+  assert.equal(blankThink.display, 'reasoning-only');
 });

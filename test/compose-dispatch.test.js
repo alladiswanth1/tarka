@@ -45,7 +45,8 @@ test('the three engines call the shipped decision helpers, not a private copy', 
     'dropDebateSeat',
     'debateAnswerAttribution',
     'parseDebateStatus',
-    'pickDebatePresenter'
+    'pickDebatePresenter',
+    'debateRoundBudget'
   ]) {
     assert.match(debate, new RegExp(`\\b${name}\\b`), `debate engine must call ${name}`);
   }
@@ -56,7 +57,9 @@ test('the three engines call the shipped decision helpers, not a private copy', 
     'parseAgentResponse',
     'projectToolCallKey',
     'projectToolCallPayload',
-    'noteRepeatToolCall'
+    'noteRepeatToolCall',
+    'pjTrimConvo',
+    'projectToolResultCounts'
   ]) {
     assert.match(project, new RegExp(`\\b${name}\\b`), `project engine must call ${name}`);
   }

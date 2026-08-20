@@ -328,6 +328,15 @@ const PJ_SESSION_WORK_TOOLS = new Set([
 ]);
 
 /**
+ * Whether a finished tool result can count as done-gate evidence.
+ * A blocked / failed-to-start call cannot; a `run` that executed can,
+ * even when the process exited non-zero.
+ */
+function projectToolResultCounts(out) {
+  return !!(out && (out.ok || (out.tool === 'run' && out.ran)));
+}
+
+/**
  * Count a finished tool call against this turn's done-gate evidence.
  * `list_files` inspects but does not count as session work. A `run` that
  * actually executed (even with a non-zero exit) still counts; a blocked /
@@ -335,8 +344,7 @@ const PJ_SESSION_WORK_TOOLS = new Set([
  */
 function recordProjectToolEvidence(out, did) {
   const acc = did || { work: 0, inspect: 0 };
-  if (!out) return acc;
-  if ((out.ok || (out.tool === 'run' && out.ran)) && PJ_WORK_TOOLS.has(out.tool)) {
+  if (projectToolResultCounts(out) && PJ_WORK_TOOLS.has(out.tool)) {
     if (PJ_SESSION_WORK_TOOLS.has(out.tool)) acc.work++;
     if (PJ_INSPECT_TOOLS.has(out.tool)) acc.inspect++;
   }
@@ -490,5 +498,6 @@ export {
   buildProjectSystemPrompt, pjJournalLineForPrompt, pjToolLabel,
   PJ_WORK_TOOLS, PJ_INSPECT_TOOLS, PJ_SESSION_WORK_TOOLS, pjTrimConvo,
   recordProjectToolEvidence, evaluateProjectDoneClaim, resolveProjectNextSeat,
-  projectToolCallKey, projectToolCallPayload, noteRepeatToolCall, commandExitFacts
+  projectToolCallKey, projectToolCallPayload, noteRepeatToolCall, commandExitFacts,
+  projectToolResultCounts
 };

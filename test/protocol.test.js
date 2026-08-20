@@ -436,9 +436,16 @@ test('debateRoundBudget: fixed uses N, auto uses the safety cap', () => {
   assert.equal(D.normalizeDebateRoundMode('fixed'), 'fixed');
   assert.equal(D.normalizeDebateRoundMode('nope'), 'fixed');
   assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 4 }), 4);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 1 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 8 }), 8);
   assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 99 }), D.DEBATE_MAX_ROUNDS);
   assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 0 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: -3 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: '5' }), 5);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed' }), 4);
   assert.equal(D.debateRoundBudget({ roundMode: 'auto', maxRounds: 2 }), D.DEBATE_AUTO_MAX_ROUNDS);
+  assert.equal(D.DEBATE_MAX_ROUNDS, 8);
+  assert.equal(D.DEBATE_AUTO_MAX_ROUNDS, 12);
   assert.ok(D.DEBATE_AUTO_MAX_ROUNDS > D.DEBATE_MAX_ROUNDS);
 });
 
@@ -674,6 +681,17 @@ test('the done gate refuses no session work and a verifier who inspected nothing
   assert.equal(ok.refusal, '');
   assert.equal(ok.sessionWork, 3);
 
+  // list_files is inspection: enough for a verifier once the session did real work
+  const listVerify = P.evaluateProjectDoneClaim({
+    status: 'done',
+    did: { work: 0, inspect: 1 },
+    sessionWork: 4,
+    verifying: true,
+    seatName: 'Bev'
+  });
+  assert.equal(listVerify.accept, true, 'list_files inspects; session work already happened');
+  assert.equal(listVerify.refusal, '');
+
   const working = P.evaluateProjectDoneClaim({
     status: 'working',
     did: { work: 2, inspect: 1 },
@@ -749,6 +767,39 @@ test('a repeated identical tool call is not fresh progress', () => {
   assert.match(String(again.prior), /ok 12 lines/);
   const other = P.noteRepeatToolCall(seen, c, 'other');
   assert.equal(other.repeat, false);
+});
+
+test('a failed tool result does not occupy the repeat slot — a later success still counts', () => {
+  const fail = { ok: false, tool: 'read_file', detail: 'not found' };
+  const ok = { ok: true, tool: 'read_file', detail: 'ok 12 lines' };
+  const blockedRun = { ok: false, tool: 'run' };
+  const ran = { ok: false, tool: 'run', ran: true, detail: 'exit 1' };
+
+  assert.equal(P.projectToolResultCounts(fail), false);
+  assert.equal(P.projectToolResultCounts(ok), true);
+  assert.equal(P.projectToolResultCounts(blockedRun), false, 'a blocked run never started');
+  assert.equal(P.projectToolResultCounts(ran), true, 'an executed run still counts');
+  assert.equal(P.projectToolResultCounts(null), false);
+
+  const did = { work: 0, inspect: 0 };
+  P.recordProjectToolEvidence(fail, did);
+  assert.equal(did.inspect, 0);
+  assert.equal(did.work, 0);
+
+  const seen = new Map();
+  const key = P.projectToolCallKey('read_file', { path: 'a.js' });
+  // Engine only notes counting results. A failure never enters `seen`.
+  assert.equal(P.projectToolResultCounts(fail), false);
+  assert.equal(seen.size, 0);
+
+  const firstOk = P.noteRepeatToolCall(seen, key, ok.detail);
+  assert.equal(firstOk.repeat, false);
+  P.recordProjectToolEvidence(ok, did);
+  assert.equal(did.inspect, 1);
+  assert.equal(did.work, 1);
+
+  const again = P.noteRepeatToolCall(seen, key, 'second look');
+  assert.equal(again.repeat, true, 'the identical success is not fresh progress');
 });
 
 test('write/edit identity uses the full fence payload, not just the path', () => {
