@@ -7,6 +7,8 @@
  * handler in isolation. Nothing here is Tarka-specific enough to belong in lib/.
  */
 const http = require('http');
+const os = require('os');
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -79,8 +81,11 @@ function usageChunk(usage) {
 /** Start the real server.js on an ephemeral port and wait until it listens. */
 async function startTarka(env = {}) {
   const port = await freePort();
+  // Every server gets its own project index: the real data/projects.json is
+  // the user's, and a test that creates a project must not leave it there.
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tarka-data-'));
   const child = spawn(process.execPath, [path.join(__dirname, '..', '..', 'server.js')], {
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', ...env },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', TARKA_DATA_DIR: dataDir, ...env },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const stderr = [];
@@ -112,10 +117,15 @@ async function startTarka(env = {}) {
         body: JSON.stringify(body),
         ...init
       }),
+    dataDir,
     close: () =>
       new Promise((resolve) => {
-        if (child.exitCode != null) return resolve();
-        child.once('exit', () => resolve());
+        const done = () => {
+          fs.rmSync(dataDir, { recursive: true, force: true });
+          resolve();
+        };
+        if (child.exitCode != null) return done();
+        child.once('exit', done);
         child.kill('SIGKILL');
       })
   };

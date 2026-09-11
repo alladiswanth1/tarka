@@ -1,5 +1,5 @@
 import { getConfig } from '../config.js';
-import { getActiveProvider, isLocalProvider, localProfileReady, providers } from '../providers.js';
+import { getActiveProvider, isLocalProvider, localAgentsSynced, localProfileReady, providers } from '../providers.js';
 import { openProviderEditor } from '../ui/providers.js';
 import { openSidebar, setSidebarPanel } from '../ui/sidebar.js';
 import { appendError } from '../ui/transcript.js';
@@ -23,10 +23,20 @@ function getValidatedConfig() {
     return null;
   }
   const provider = getActiveProvider();
+  if (!cfg.model) {
+    appendError('Set a model id in the sidebar first.');
+    openSidebar();
+    setSidebarPanel('api');
+    return null;
+  }
   if (isLocalProvider(provider)) {
     if (!localProfileReady(provider)) {
+      // Profiles load "not ready" until /api/agents/local has answered, which
+      // spawns each CLI for --version. Enter on a restored draft beat that.
       appendError(
-        `${provider.name || 'Local agent'} is not signed in on this machine — install the CLI and run its login.`
+        localAgentsSynced
+          ? `${provider.name || 'Local agent'} is not signed in on this machine — install the CLI and run its login.`
+          : `Still checking whether ${provider.name || 'the local agent'} is signed in — try again in a moment.`
       );
       openSidebar();
       setSidebarPanel('api');
@@ -53,9 +63,16 @@ function getValidatedConfig() {
   return cfg;
 }
 
+/** Turn a stream result's in-band error into an Error that keeps the HTTP status. */
+function streamResultError(result) {
+  const e = new Error(result?.error || 'Upstream error');
+  if (Number.isInteger(result?.status)) e.status = result.status;
+  return e;
+}
+
 /**
  * Core streaming call: fetch + SSE parsing ONLY (parser moved verbatim from
- * streamAssistantReply). Resolves { content, error, cancelled }:
+ * streamAssistantReply). Resolves { content, error, status, cancelled }:
  * - `content`  — accumulated answer text (also fed to onToken chunk-by-chunk)
  * - `error`    — in-stream provider error string (caller decides to throw)
  * - `cancelled`— true if shouldCancel() tripped mid-stream (reader cancelled)
@@ -106,7 +123,14 @@ async function streamCompletion({
     signal
   });
 
-  if (shouldCancel && shouldCancel()) return { content: '', error: null, cancelled: true };
+  if (shouldCancel && shouldCancel()) {
+    try {
+      await res.body?.cancel();
+    } catch {
+      /* ignore */
+    }
+    return { content: '', error: null, cancelled: true };
+  }
 
   // Non-SSE error responses (validation etc.)
   const contentType = res.headers.get('content-type') || '';
@@ -119,7 +143,9 @@ async function streamCompletion({
       const t = await res.text().catch(() => '');
       if (t) msg = t.slice(0, 300);
     }
-    throw new Error(msg);
+    const e = new Error(msg);
+    e.status = res.status; // the retry classifier reads this, not the prose
+    throw e;
   }
 
   if (!res.body) {
@@ -131,6 +157,10 @@ async function streamCompletion({
   let buffer = '';
   let content = '';
   let streamError = null;
+  /** Upstream HTTP status the proxy attached to an in-stream error, if any. */
+  let streamStatus = null;
+  /** A non-"stop" finish_reason the proxy forwarded on `done` (length, content_filter…). */
+  let finishReason = null;
 
   const handleEvent = (evt) => {
     if (evt.type === 'content' && evt.content) {
@@ -141,8 +171,10 @@ async function streamCompletion({
       if (onReasoningToken) onReasoningToken(piece);
     } else if (evt.type === 'done') {
       if (evt.usage && onUsage) onUsage(evt.usage);
+      if (typeof evt.finish_reason === 'string') finishReason = evt.finish_reason;
     } else if (evt.type === 'error') {
       streamError = evt.error || 'Upstream error';
+      streamStatus = Number.isInteger(evt.status) ? evt.status : null;
     }
   };
 
@@ -153,7 +185,7 @@ async function streamCompletion({
       } catch {
         /* ignore */
       }
-      return { content, error: streamError, cancelled: true };
+      return { content, error: streamError, status: streamStatus, cancelled: true, finishReason };
     }
     const { done, value } = await reader.read();
     if (done) break;
@@ -200,7 +232,7 @@ async function streamCompletion({
     }
   }
 
-  return { content, error: streamError, cancelled: false };
+  return { content, error: streamError, status: streamStatus, cancelled: false, finishReason };
 }
 
 export {
@@ -210,5 +242,6 @@ export {
   shouldRetryStream,
   sleep,
   soloAssistantDisposition,
-  streamCompletion
+  streamCompletion,
+  streamResultError
 };

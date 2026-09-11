@@ -1,4 +1,4 @@
-import { DEBATE_MAX_SEATS, debateRoundBudget, normalizeDebateRoundMode } from '../debate/protocol.js';
+import { DEBATE_MAX_SEATS, debateRoundBudget, normalizeDebateConsensusMode, normalizeDebateRoundMode } from '../debate/protocol.js';
 import { prefillEmptyDebateSeats, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from '../debate/ui.js';
 import { projectMode, refreshEmptyWelcome, setProjectMode, updateDebateToggleUi } from '../project/state.js';
 import { $, TEAMS_KEY, activeTeamId, debateTeams, setActiveTeamId, setDebateTeams } from '../state.js';
@@ -30,6 +30,8 @@ function defaultDebateSettings() {
     maxRounds: 4,
     // 'fixed' = stop after maxRounds (legacy). 'auto' = team AGREE ends it.
     roundMode: 'fixed',
+    // 'all' = every expert must AGREE (default). 'majority' = more than half.
+    consensusMode: 'all',
     // Elite by default: experts think at the global reasoning effort, like the
     // final answer. 'off' remains available as an explicit economy choice.
     expertReasoning: 'inherit',
@@ -59,6 +61,7 @@ function loadDebateSettings() {
           })),
         maxRounds: debateRoundBudget({ roundMode: 'fixed', maxRounds: d.maxRounds }),
         roundMode: normalizeDebateRoundMode(d.roundMode),
+        consensusMode: normalizeDebateConsensusMode(d.consensusMode),
         expertReasoning: d.expertReasoning === 'off' ? 'off' : 'inherit',
         finalAnswerMode: d.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
         judge: {

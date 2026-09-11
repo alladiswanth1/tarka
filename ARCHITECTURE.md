@@ -13,7 +13,7 @@ central constraint, so say so in the PR.
 ## The shape of it
 
 ```
-server.js          131 lines — request pipeline and listen, nothing else
+server.js          request pipeline and listen, nothing else
 lib/               the server, one concern per file
 public/
   index.html       markup + CSP; loads app.js as a module
@@ -53,6 +53,8 @@ the `.catch()`; don't make the outer callback async again.
 | File | Holds |
 |---|---|
 | `paths.js` | `APP_DIR`, `PUBLIC_DIR`, `DATA_DIR`. **Anchored to the repo root, never `__dirname` of the importing file** — see the warning below |
+| `spawn-hygiene.js` | `scrubSpawnEnv` (drops `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*` from a child env) and `commandExitFacts`. Pure |
+| `project/constants.js` | the hard limits agents are told about: read/write/exec caps, timeouts, journal rotation |
 | `config.js` | env parsing: port, host, timeouts, upstream attribution headers |
 | `http.js` | body parsing, static files, SSE writes, JSON replies |
 | `security.js` | the trust boundary: `isPrivateIp`, host/origin/CSRF checks, SSRF containment, DNS pinning |
@@ -62,7 +64,7 @@ the `.catch()`; don't make the outer callback async again.
 | `project/fs.js` | file operations, all routed through `resolveInside` |
 | `project/exec.js` | shell execution: timeout, output caps, process-group kill |
 | `project/state.js` | projects index, task board, decisions, journal |
-| `project/routes.js` | the `/api/project*` endpoints |
+| `project/routes.js` | the `/api/project*` endpoints. Every read-modify-write on `project.json`, `projects.json`, `decisions.json` and the journal goes through `withFileLock` (`state.js`): `writeJsonAtomic` makes a WRITE atomic, not the sequence around it, and the engine's per-turn `lastSeat` patch raced the user's rename |
 
 > ### ⚠ Containment is judged on where a path LANDS
 > `resolveInside` resolves the target component by component with `lstat`
@@ -80,6 +82,22 @@ the `.catch()`; don't make the outer callback async again.
 > `lib/paths.js`**. Deriving it from `__dirname` inside `lib/project/` resolves
 > to `lib/project` and silently narrows the guard, leaving the app root
 > assignable as a project folder. If you move that check, keep the import.
+
+### Local CLI seats are language models, not agents
+
+`streamLocalAgentChat` gives every CLI a throwaway `cwd` and no tools (Claude:
+`--tools "" --strict-mcp-config --setting-sources user`, Codex: `-C <tmp>`
+read-only sandbox, Grok: `--cwd <tmp>` with write/shell tools denied). The
+prompt is the debate transcript — text produced by OTHER models — so the seat
+must never treat Tarka's checkout or the operator's shell cwd as its project.
+The child is its own process group and Stop signals the group: `child.kill()`
+never reached Claude's MCP servers or Codex's sandbox helper. `child.stdin`
+has an error listener because a CLI that exits before draining a long prompt
+makes the queued write fail with EPIPE — an event, not a rejection, and
+unhandled it took the whole process down. Sign-in is judged on
+`~/.claude/.credentials.json` (or the macOS keychain), never on
+`~/.claude.json`, which the CLI creates on first launch whether or not login
+completed.
 
 ### Two non-obvious server details
 
@@ -99,7 +117,20 @@ the `.catch()`; don't make the outer callback async again.
 - **`handleChat` has a compatibility ladder.** A rejected `stream_options`,
   reasoning shape, `max_tokens` vs `max_completion_tokens`, or an unsupported
   `temperature` each cost exactly one transparent retry, checked
-  most-specific-first. See `reasoningVariants()`.
+  most-specific-first. See `reasoningVariants()`. A rule fires only when the
+  parameter NAME sits next to a rejection word (`rejectsParam`): pydantic-style
+  422s echo the whole request under `input`, so a bare substring test walked
+  the entire ladder — six re-sends of the transcript — for an unrelated 400.
+  Hosts that ignore unknown fields with a 200 (OpenAI, Azure, Gemini, xAI,
+  Groq) get `reasoning_effort` first, because the ladder cannot learn from a
+  success; Anthropic's shim gets a `thinking` object.
+- **Nothing that ends a turn is allowed to be silent.** A 3xx (Node never
+  follows redirects), a 200 with no `data:` line (an HTML login page), a socket
+  that dies mid error-body, and a `data: null` event all used to end as a blank
+  reply, a hang, or — for `null`, thrown inside a socket listener where the
+  `route()` catch cannot reach — a dead process. `finish_reason` other than
+  `stop` rides on the final `done` event so `length` and `content_filter` are
+  named in the UI instead of looking like a short answer.
 - **`stream_options: { include_usage: true }` is always sent.** OpenAI — and
   everything that copies it: Azure, vLLM, Together, Fireworks, DeepSeek, Groq,
   Ollama's shim — reports no token usage at all during streaming without it, so
@@ -208,6 +239,9 @@ State lives with its topic, not in one god module:
 | Module | Owns |
 |---|---|
 | `src/state.js` | cross-cutting: `messages`, `isStreaming`, `abortController`, `chatSession`, DOM refs, `$` |
+| `src/net/retry.js` | the transient-error classifier and the one-retry policy. **Pure**. It classifies on `err.status` when the proxy attached one (the SSE `error` event and non-OK replies both carry it) and only falls back to parsing the prose — where OpenAI's "try again in 425ms" once read as a 425 refusal |
+| `src/localAgents.js` | `/api/agents/local` sync into provider profiles; `localAgentsSynced` gates the "not signed in" message until detection has actually answered |
+| `src/compose.js` | the composer: draft persistence and mode dispatch |
 | `src/sessions.js` | the chat list, history load/save |
 | `src/providers.js` / `src/config.js` | provider profiles, global settings |
 | `src/contextStore.js` | the provider-reported context-window cache (imports only `state.js` + pure `modelId.js`) |
@@ -215,6 +249,15 @@ State lives with its topic, not in one god module:
 | `src/modelId.js` | model-id equivalence. **Pure** — mirrors `lib/proxy.js`; `test/model-id.test.js` runs one table through both |
 | `src/debate/settings.js` | debate teams and seat config |
 | `src/project/state.js` | active project, task board, decisions, journal |
+
+### The inspector below 1241px
+
+`src/ui/inspector.js` docks the pane only on wide screens (`inspectorMq`). Below
+that it is a sheet: `#inspToggle` opens it as `.inspector.overlay`, Esc or the
+close button dismisses it, and `inspectorOverlay` is never persisted — boot and
+breakpoint crossings go through `applyInspectorLayout()`, which never opens the
+sheet, so a desktop that left the pane open does not cover a laptop's
+transcript on load. The debate arena still docks only into the wide pane.
 
 ### ⚠ One catalog fetch, one context cache
 
@@ -259,6 +302,13 @@ All three modes stream through one function: **`src/net/stream.js` →
 `streamCompletion()`**. It POSTs to `/api/chat`, parses the SSE, and calls
 `onToken` / `onReasoningToken` / `onUsage`. Everything above it is orchestration.
 
+### A reply belongs to the chat it was asked in
+
+Solo and Debate capture `activeSessionId` and the `messages` array when a run
+starts. A session switch mid-stream aborts the run as stale; the partial
+answer is then filed under the captured chat via `persistSessionSnapshot()`
+rather than into whichever chat is live now, and never dropped.
+
 ### Solo — `src/solo.js`
 
 ```
@@ -276,6 +326,11 @@ runDebate(cfg, task)                              engine.js
   rounds 2..n: round-robin over the transcript
   final answer: nominated expert OR neutral judge
 ```
+
+`consensusMode` is `all` (every live seat AGREEs) or `majority` (more than
+half; two seats still need both). Under majority the experts are told the rule
+so a minority argues its case now, and the presenter is handed the dissenters
+by name and must address them. `debateDissenters()` names them on the arena.
 
 Optional **Auto** rounds (`roundMode: 'auto'`): the loop uses a safety cap
 (`DEBATE_AUTO_MAX_ROUNDS`) instead of the user's N. Consensus still ends it.
@@ -337,13 +392,20 @@ runProjectSession(instruction)                    engine.js
   a member claims "done" → next member VERIFIES → final report
 ```
 
+Teams are 1–4 members. A one-member team is prompted as "the sole AI
+engineer", gets no `debate` tool, and hands off to itself: the done streak
+still needs two turns (claim + a verify-prompted turn by the same seat), so a
+solo "done" is never taken on trust either. `settings.runMode` is `turns`
+(the user's N, then "say continue") or `auto` (work until done is verified,
+`PJ_AUTO_MAX_TURNS` as a runaway cap).
+
 | File | Holds |
 |---|---|
 | `protocol.js` | system prompt, tool-block parsing, handoff marker, `pjTrimConvo`. **Pure** |
 | `tools.js` | `executeAgentBlock` — the tool implementations |
 | `engine.js` | session loop, turn loop, the done gate |
 | `state.js` | project CRUD, task board, journal state |
-| `journal.js` | the transcript rendering |
+| `journal.js` | the transcript rendering. A tool card is painted `pending` BEFORE the call runs and repainted with the result (`pjFillToolCard`); on restore, consecutive say/tool events by one seat share a shell, matching the live view |
 
 A turn ends with:
 
@@ -365,6 +427,20 @@ trust:
   of it was read, built or checked — with listing included, two turns that each
   ran one `list_files` satisfied the gate and the team shipped a confident
   report about files nobody opened.
+
+A session also ends as **stalled** after four consecutive turns whose `did.work`
+is zero. `work` counts read/write/run — not `list_files`, which is how a
+wandering team spent all 24 turns "looking around" without ever tripping this:
+listing counted as inspection and reset the counter every turn.
+
+`task_add` refuses a title already on the board (case-insensitive) and
+`decision` skips identical text: every fresh turn re-plans from the same
+brief, and one session left 24 copies of the same task and decision.
+
+The brief carries the last three EARLIER client instructions alongside the
+current one, because "continue" or "yes, use node" means nothing on its own —
+and the 30-line activity window had already scrolled the original instruction
+out by the time a follow-up's final report was written.
 
 The evidence sets are `PJ_WORK_TOOLS` and `PJ_INSPECT_TOOLS` in `protocol.js` —
 editing them changes what "done" means. Refusals are written into the journal, so
@@ -430,6 +506,15 @@ at a mock OpenAI-compatible provider (`test/helpers/harness.js`).
 | `markdown.test.js` | the rendering safety contract — model output is untrusted input |
 | `project-paths.test.js` | Project Mode containment: traversal, symlinks, `.tarka`, refused folders |
 | `frontend-graph.test.js` | every import in `public/` resolves and is actually exported; `state.js` stays import-free; `app.js` stays behaviour-free |
+| `local-agents.test.js` | detection, the fake CLIs end to end, and the EPIPE regression (a CLI that dies before reading a long prompt must not take the server down) |
+| `project-routes.test.js` | `/api/project*` end to end: exec closes stdin, `rm -rf ..` is blocked, concurrent updates keep every patch |
+| `server-hardening.test.js` | hostile `Host` values, NUL in static paths, anti-framing headers |
+| `timeout.test.js` | idle-timeout phrasing, SSE keep-alives, `/models` timeout |
+| `stream-retry.test.js` | the shipped retry classifier and policy |
+| `compose-dispatch.test.js` | composer mode dispatch |
+| `context-share.test.js` | the cross-provider context-window share |
+| `providers-declared.test.js` | declared-model context parsing on provider profiles |
+| `spawn-hygiene.test.js` | env scrubbing and exit facts, plus a source check that both spawn sites use them |
 
 `frontend-graph.test.js` is the one that pays for itself with no build step —
 a renamed export is otherwise a blank page and a console error, on whichever

@@ -2,7 +2,7 @@
 
 Self-hosted chat UI for any OpenAI-compatible API. One process, no install step, no bundler.
 
-Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or a **2–4** member team that writes real files in **Project**. Point it at OpenRouter, TokenRouter, Together, Fireworks, DeepSeek, Moonshot, local vLLM/Ollama — or at the Claude Code, Codex, or Grok Build CLI already signed in on this machine.
+Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or a **1–4** member team that writes real files in **Project**. Point it at OpenRouter, TokenRouter, Together, Fireworks, DeepSeek, Moonshot, local vLLM/Ollama — or at the Claude Code, Codex, or Grok Build CLI already signed in on this machine.
 
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/npm_dependencies-0-success)](#development)
@@ -26,7 +26,7 @@ Run a single model in **Solo**, a team of **2–5 AI experts** in **Debate**, or
 | **Local Claude Code / Codex / Grok Build** | Detects a signed-in `claude`, `codex`, or `grok` CLI and uses it as a provider. No extra key. |
 | **Solo** | Streaming replies, reasoning effort, context meter, edit/resend, export. |
 | **Debate** | 2–5 experts, each on its own model/provider. Blind first round, informed consensus, optional judge. |
-| **Project** | 2–4 members build inside one folder: files, shell, task board, decisions. |
+| **Project** | 1–4 members build inside one folder: files, shell, task board, decisions. Fixed turns or Auto until verified complete. |
 | **Zero toolchain** | Native ESM in the browser, CommonJS on the server. `node server.js` is the build. |
 
 ## Requirements
@@ -86,20 +86,24 @@ Round 1 is blind and parallel. Later rounds share a transcript. Opening-round vo
 
 **Auto rounds** (optional): the team keeps going until they AGREE the problem is solved, with a 12-round safety cap. Stop (Esc) during Auto still writes a final answer from the discussion so far.
 
+**Agreement** (optional): unanimous by default. **Majority** ends the discussion once more than half the experts agree; the final answer must address the dissent by name.
+
 ### Project
 
 1. Toggle **Project**.
 2. Create a project: a name and an **absolute** folder path. `/`, `$HOME`, system directories, and Tarka’s own tree are refused.
-3. Assign 2–4 members. Roles are optional.
+3. Assign 1–4 members. Roles are optional. One member works alone and verifies its own "done" in a separate turn.
 4. Instruct the team.
 
-Members read and write files, run commands, and keep a task board. **Stop** ends the session and kills a running command. A `done` claim is refused if nobody did real work (`list_files` is not enough) or if the verifier did not inspect anything. A member cannot verify its own claim.
+Members read and write files, run commands, and keep a task board. **Stop** ends the session and kills a running command.
+
+**Session length**: *Fixed* stops after N turns and asks you to say "continue". *Auto* keeps working until a member reports the instruction done and it is verified, with a 120-turn safety cap. A session also ends as *stalled* after four turns that touch nothing. A `done` claim is refused if nobody did real work (`list_files` is not enough) or if the verifier did not inspect anything. A member cannot verify its own claim.
 
 Work is confined to the assigned folder (symlink-safe). Commands are not containerized; catastrophic shells are blocked. Project APIs are loopback-only. Removing a project does not delete your files. Tarka state lives in `.tarka/` inside the folder.
 
 ### Local Claude Code, Codex, and Grok Build
 
-Tarka does not ship those products. It looks for the binaries and for their auth **files** (`~/.claude.json`, `~/.codex/auth.json`, `~/.grok/auth.json`, and the usual fallbacks). It never reads the secret. A ready CLI is a provider on Solo, Debate, and Project.
+Tarka does not ship those products. It looks for the binaries and for their auth **files** (`~/.claude/.credentials.json` or the macOS keychain entry, `~/.codex/auth.json`, `~/.grok/auth.json`, and the usual fallbacks). It never reads the secret. Grok may also sign in with `XAI_API_KEY`, which is the one key passed through to that CLI. A ready CLI is a provider on Solo, Debate, and Project.
 
 Grok Build is used as a language model (`--max-turns 1`, no shell or file writes of its own). Project Mode still owns files and commands.
 
@@ -114,6 +118,7 @@ grok login
 | `TARKA_AGENT_HOME` | Home directory when Tarka’s `$HOME` is redirected |
 | `TARKA_CLAUDE_BIN` / `TARKA_CODEX_BIN` / `TARKA_GROK_BIN` | Absolute path if the CLI is not on `PATH` |
 | `TARKA_LOCAL_AGENT_TIMEOUT_MS` | Spawn timeout (default `600000`) |
+| `XAI_API_KEY` / `GROK_HOME` | Honoured for Grok sign-in detection; the key is the one secret passed through to that CLI |
 
 ## Keyboard shortcuts
 
@@ -125,6 +130,8 @@ grok login
 | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> | Command palette |
 | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> | New chat |
 | <kbd>↑</kbd> | Recall last user message (empty composer) |
+| <kbd>Esc</kbd> | Close the command palette, export menu, or mobile drawer |
+| <kbd>Home</kbd> / <kbd>End</kbd> | First / last result in the command palette |
 
 ## Configuration
 
@@ -138,6 +145,8 @@ grok login
 | `TARKA_ALLOWED_HOSTS` | — | Extra `Host` values behind a reverse proxy (`*.example.com` or `*`) |
 | `TARKA_APP_NAME` | `Tarka` | Attribution title sent upstream |
 | `TARKA_APP_URL` | `http://tarka.localhost/` | Attribution `Referer` |
+| `TARKA_BEHIND_PROXY` | — | Set to `1` behind a reverse proxy: treats no client as local (see Security) |
+| `TARKA_DATA_DIR` | `./data` | Where the project index (`projects.json`) lives |
 
 ```bash
 HOST=0.0.0.0 node server.js
@@ -157,6 +166,7 @@ Tarka is a local forwarding proxy. The browser sends the key and base URL; this 
 - Requires a `Host` that names this machine (`localhost`, `*.local`, or an IP) unless `TARKA_ALLOWED_HOSTS` is set
 - Blocks non-loopback clients from proxying to private addresses
 - Keeps Project and local-agent routes on loopback even when `HOST=0.0.0.0`
+- Behind a reverse proxy every client arrives from `127.0.0.1`. Set `TARKA_BEHIND_PROXY=1` so Project Mode, local CLIs, and the private-address block treat nobody as local
 - Stores API keys only in `localStorage`
 
 ## Development

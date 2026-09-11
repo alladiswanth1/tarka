@@ -7,7 +7,7 @@ import { getConfig } from '../config.js';
 import { getValidatedConfig } from '../net/stream.js';
 import { renderHistoryFromState } from '../sessions.js';
 import { streamAssistantReply } from '../solo.js';
-import { $, abortController, isStreaming, messages, messagesEl, prefersReducedMotion, sendBtn, setAbortController, setIsStreaming, setMessages, statusText, userInput } from '../state.js';
+import { $, abortController, isStreaming, messages, messagesEl, prefersReducedMotion, sendBtn, setAbortController, setIsStreaming, setLastCompletionTokens, setLastPromptTokens, setMessages, statusText, userInput } from '../state.js';
 import { setFaviconThinking } from '../ui/mark.js';
 import { autoResize, openSidebar, setSidebarPanel } from '../ui/sidebar.js';
 
@@ -23,10 +23,6 @@ function formatThoughtDuration(ms) {
   if (sec < 10) return `${sec.toFixed(1)}s`;
   return `${Math.round(sec)}s`;
 }
-
-/**
- * Reasoning panel: animated orb, shimmer "Thinking", stream, then collapse.
- */
 
 /**
  * Reasoning panel: animated orb, shimmer "Thinking", stream, then collapse.
@@ -198,12 +194,6 @@ const liveReasoningPanels = new Set();
  * Every path that drops a panel without finalizing it must come through here —
  * a detached panel whose interval still runs burns CPU for the whole session.
  */
-
-/**
- * Stop a reasoning panel's elapsed timer, optionally removing the panel.
- * Every path that drops a panel without finalizing it must come through here —
- * a detached panel whose interval still runs burns CPU for the whole session.
- */
 function destroyReasoningPanel(panelApi, { remove = true } = {}) {
   if (!panelApi) return null;
   clearInterval(panelApi.elapsedTimer);
@@ -219,12 +209,6 @@ function destroyReasoningPanel(panelApi, { remove = true } = {}) {
   if (remove) panelApi.el.remove();
   return null;
 }
-
-/**
- * Backstop for panels orphaned by an abandoned run (New Chat mid-stream, a
- * stopped project turn): the transcript they lived in is already gone, so only
- * their timers survive. Called wherever a session/run counter is bumped.
- */
 
 /**
  * Backstop for panels orphaned by an abandoned run (New Chat mid-stream, a
@@ -320,23 +304,9 @@ function addUserActions(msgEl, body, rawContent) {
  * transcript). Excluded from DOM ↔ history mapping so Edit/Regenerate keep
  * pointing at the right turn.
  */
-
-/**
- * Mark an assistant shell that stays on screen but was never pushed to
- * history (a stop that kept only the chain of thought or a debate
- * transcript). Excluded from DOM ↔ history mapping so Edit/Regenerate keep
- * pointing at the right turn.
- */
 function markOrphanMessage(msgEl) {
   if (msgEl && msgEl.parentNode) msgEl.classList.add('msg-orphan');
 }
-
-/**
- * Edit a user turn: rewind the conversation to just before it and put the
- * text back in the composer. DOM ↔ history index is aligned from the tail,
- * because pushHistoryMessage may have trimmed the head past HISTORY_MAX.
- * Orphan shells (stopped turns that never entered history) are skipped.
- */
 
 /**
  * Edit a user turn: rewind the conversation to just before it and put the
@@ -356,6 +326,10 @@ function editUserMessage(msgEl) {
   if (mIdx < 0 || mIdx >= messages.length || messages[mIdx].role !== 'user') return;
   const draft = messages[mIdx].content;
   setMessages(messages.slice(0, mIdx));
+  // The last measured prompt_tokens described a conversation that no longer
+  // exists; the meter floors on it, so a rewound chat still read "98% full".
+  setLastPromptTokens(null);
+  setLastCompletionTokens(null);
   scheduleHistorySave();
   renderHistoryFromState();
   updateScrollFab();
@@ -394,6 +368,8 @@ async function regenerate(msgEl) {
     if (!cfg) return;
   }
   const removed = messages.pop();
+  setLastPromptTokens(null);
+  setLastCompletionTokens(null);
   scheduleHistorySave();
   msgEl.remove();
   stickToBottom = true;
@@ -409,12 +385,6 @@ async function regenerate(msgEl) {
     await streamAssistantReply(cfg);
   }
 }
-
-/**
- * Permanent error line in the transcript, plus the floating toast.
- * `onRetry` adds a Retry button — a failed turn leaves the user's message in
- * history, so re-running it is one click instead of copy-paste.
- */
 
 /**
  * Permanent error line in the transcript, plus the floating toast.
@@ -445,11 +415,6 @@ function appendError(text, { onRetry = null, retryLabel = '↻ Retry' } = {}) {
   scrollToBottom();
   showErrorToast(text);
 }
-
-/**
- * Re-answer the last user turn after a failure. Nothing is rewound: the turn
- * is still in history and on screen, exactly as the model will see it.
- */
 
 /**
  * Re-answer the last user turn after a failure. Nothing is rewound: the turn
@@ -680,12 +645,6 @@ function stopStreaming() {
     setAbortController(null);
   }
 }
-
-/**
- * Cancel-with-nothing-received: unwind the exchange completely — assistant
- * shell and user bubble leave the DOM, the user turn leaves history, and the
- * text returns to the composer, so view, state, and draft all agree.
- */
 
 /**
  * Cancel-with-nothing-received: unwind the exchange completely — assistant

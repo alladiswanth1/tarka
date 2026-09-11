@@ -8,6 +8,8 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const path = require('path');
+const { pathToFileURL } = require('url');
 
 const {
   startMockProvider,
@@ -19,8 +21,10 @@ const {
 } = require('./helpers/harness');
 
 let tarka;
+let retry;
 test.before(async () => {
   tarka = await startTarka();
+  retry = await import(pathToFileURL(path.join(__dirname, '..', 'public', 'src', 'net', 'retry.js')).href);
 });
 test.after(async () => {
   if (tarka) await tarka.close();
@@ -292,17 +296,67 @@ test('a non-streaming JSON reply is still surfaced', async () => {
   }
 });
 
-test('a provider error message reaches the user verbatim', async () => {
+test('a provider error message reaches the user with its HTTP status', async () => {
   const provider = await startMockProvider((req, res) => {
     res.writeHead(402, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   });
   try {
     const out = await readSse(await chat(provider));
-    assert.deepEqual(out.errors, ['Insufficient credits']);
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /HTTP 402/);
+    assert.match(out.errors[0], /Insufficient credits/);
     assert.equal(provider.requests.length, 1, 'a 402 is not a parameter problem — no retry');
+    assert.equal(
+      retry.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: out.errors[0] }),
+      false
+    );
   } finally {
     await provider.close();
+  }
+});
+
+/*
+ * The JSON body often has no status code. Dropping `Upstream HTTP ${status}`
+ * made a 400 "temporarily unavailable" look retryable and a 500
+ * "Internal Server Error" look permanent. Solo classifies this exact string.
+ */
+test('upstream 4xx/5xx errors keep HTTP status so Solo retry classifies the live string', async () => {
+  const four = await startMockProvider((req, res) => {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'model temporarily unavailable' } }));
+  });
+  try {
+    const out = await readSse(await chat(four));
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /HTTP 400/);
+    assert.match(out.errors[0], /temporarily unavailable/);
+    assert.equal(
+      retry.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: out.errors[0] }),
+      false,
+      '4xx refusals are not retried even with transient wording'
+    );
+    assert.equal(four.requests.length, 1, 'proxy itself does not retry a non-parameter 400');
+  } finally {
+    await four.close();
+  }
+
+  const five = await startMockProvider((req, res) => {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'Internal Server Error' } }));
+  });
+  try {
+    const out = await readSse(await chat(five));
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /HTTP 500/);
+    assert.match(out.errors[0], /Internal Server Error/);
+    assert.equal(
+      retry.shouldRetryStream({ attempt: 1, streamedAnswer: '', error: out.errors[0] }),
+      true,
+      '5xx must retry even when the body names no status code'
+    );
+  } finally {
+    await five.close();
   }
 });
 
@@ -316,7 +370,8 @@ test('the TokenRouter error envelope is unwrapped correctly', async () => {
   });
   try {
     const out = await readSse(await chat(provider));
-    assert.match(out.errors[0], /^Token not provided/);
+    assert.match(out.errors[0], /HTTP 401/);
+    assert.match(out.errors[0], /Token not provided/);
   } finally {
     await provider.close();
   }
@@ -544,3 +599,187 @@ test('an oversized non-streaming JSON reply is refused, not swallowed whole', as
     await provider.close();
   }
 });
+
+/*
+ * Regression: the 4xx and non-SSE JSON branches read the body to its 'end'
+ * event and decide there. A socket that dies mid-body never reaches 'end',
+ * IncomingMessage only emits 'error' when someone listens, and the
+ * ClientRequest is silent once a response has begun — so nothing ever wrote
+ * to the browser and the turn spun on keep-alives until the user hit Esc.
+ */
+test('an upstream that dies mid error-body ends the turn with an error, not a hang', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(500, { 'Content-Type': 'application/json', 'Content-Length': '4096' });
+    res.write('{"error":{"message":"partial');
+    setTimeout(() => res.socket.destroy(), 50);
+  });
+  try {
+    const out = await Promise.race([
+      readSse(await chat(provider)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('turn hung after upstream reset')), 4000))
+    ]);
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /closed|reset|aborted/i);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('an upstream that dies mid non-streaming JSON body ends the turn with an error', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '4096' });
+    res.write('{"choices":[{"message":{"content":"par');
+    setTimeout(() => res.socket.destroy(), 50);
+  });
+  try {
+    const out = await Promise.race([
+      readSse(await chat(provider)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('turn hung after upstream reset')), 4000))
+    ]);
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /closed|reset|aborted/i);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('an OpenAI refusal is shown as the reply instead of a blank turn', async () => {
+  const provider = await startMockProvider((req, res) => {
+    writeSseChunks(res, [
+      { choices: [{ index: 0, delta: { refusal: 'I can’t help with that.' }, finish_reason: null }] },
+      usageChunk()
+    ]);
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, 'I can’t help with that.');
+    assert.equal(out.errors.length, 0);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('a non-streaming JSON reply forwards reasoning_content as reasoning', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: 'Answer', reasoning_content: 'Thinking…' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+      })
+    );
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, 'Answer');
+    assert.equal(out.reasoning, 'Thinking…');
+    assert.equal(out.usages.length, 1);
+  } finally {
+    await provider.close();
+  }
+});
+
+/*
+ * Regression: `data: null` is valid JSON. `parsed.error` on null threw inside
+ * a socket 'data' listener — outside route()'s promise chain — and Node
+ * answered with an uncaught exception that took every in-flight chat down.
+ */
+test('a data: null event is ignored, not a process crash', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write('data: null\n\n');
+    res.write('data: 5\n\n');
+    res.write(`data: ${JSON.stringify(contentChunk('still here'))}\n\n`);
+    res.end('data: [DONE]\n\n');
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, 'still here');
+    const health = await fetch(`${tarka.origin}/api/health`);
+    assert.equal(health.status, 200, 'server must survive');
+  } finally {
+    await provider.close();
+  }
+});
+
+test('a /models body of null is a clean error, not a process crash', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('null');
+  });
+  try {
+    const r = await tarka.post('/api/models', { baseURL: provider.baseURL, apiKey: 'sk-test' });
+    const j = await r.json();
+    assert.equal(j.ok, true);
+    assert.deepEqual(j.models, []);
+    const health = await fetch(`${tarka.origin}/api/health`);
+    assert.equal(health.status, 200, 'server must survive');
+  } finally {
+    await provider.close();
+  }
+});
+
+test('a redirect is reported instead of ending as a blank reply', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(301, { Location: 'https://api.example.com/v1/chat/completions' });
+    res.end();
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, '');
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /301 redirect to https:\/\/api\.example\.com/);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('a 200 HTML page is reported instead of ending as a blank reply', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<html><body>Sign in</body></html>');
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, '');
+    assert.equal(out.errors.length, 1);
+    assert.match(out.errors[0], /no SSE events/);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('a non-stop finish_reason rides along on the done event', async () => {
+  const provider = await startMockProvider((req, res) => {
+    writeSseChunks(res, [
+      contentChunk('Half an ans'),
+      { choices: [{ index: 0, delta: {}, finish_reason: 'length' }] },
+      usageChunk()
+    ]);
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, 'Half an ans');
+    const done = out.events.find((e) => e.type === 'done');
+    assert.equal(done.finish_reason, 'length');
+    assert.equal(done.usage.total_tokens, 18);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('a 400 that merely echoes the request costs no extra upstream attempts', async () => {
+  const provider = await startMockProvider((req, res, body) => {
+    res.writeHead(422, { 'Content-Type': 'application/json' });
+    // pydantic style: the whole request comes back under `input`
+    res.end(JSON.stringify({ detail: [{ type: 'value_error', msg: 'Invalid role alternation', input: body }] }));
+  });
+  try {
+    const out = await readSse(await chat(provider, { reasoningEffort: 'high', max_tokens: 50 }));
+    assert.equal(out.errors.length, 1);
+    assert.equal(provider.requests.length, 1, 'no retry ladder for an unrelated 422');
+  } finally {
+    await provider.close();
+  }
+});
+

@@ -35,6 +35,11 @@ function normalizeDebateRoundMode(v) {
   return v === 'auto' ? 'auto' : 'fixed';
 }
 
+/** 'all' — every live seat must AGREE (default). 'majority' — more than half. */
+function normalizeDebateConsensusMode(v) {
+  return v === 'majority' ? 'majority' : 'all';
+}
+
 /** How many rounds the engine may run. Auto uses the safety cap, not the user's N. */
 function debateRoundBudget({ roundMode, maxRounds } = {}) {
   if (normalizeDebateRoundMode(roundMode) === 'auto') return DEBATE_AUTO_MAX_ROUNDS;
@@ -54,8 +59,9 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1];
 }
 
-function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, auto = false } = {}) {
+function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, auto = false, consensusMode = 'all' } = {}) {
   const names = seats.map((s) => s.name).join(', ');
+  const majority = normalizeDebateConsensusMode(consensusMode) === 'majority';
   const lines = [
     `You are ${seat.name}, one of ${seats.length} AI experts (${names}) working together to solve a client's task.`,
     `Your role — ${seat.persona}`,
@@ -72,7 +78,14 @@ function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, au
   ];
   if (blind) {
     lines.push(
-      'This is the opening round: give your own independent take on the task; you will see your colleagues\' views next round.'
+      finalRound
+        ? 'This is the only round: give your complete, independent take on the task — the final answer is written from these takes, so leave nothing for later. If your take is complete, AGREE and nominate the colleague (or yourself) best suited to write the deliverable.'
+        : 'This is the opening round: give your own independent take on the task; you will see your colleagues\' views next round.'
+    );
+  }
+  if (majority && !blind) {
+    lines.push(
+      'The discussion ends once a MAJORITY of the team AGREEs — so if you are in the minority on a material point, make the strongest concrete case for it now; the final writer must resolve it explicitly.'
     );
   }
   if (auto && !finalRound && !blind) {
@@ -80,7 +93,7 @@ function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, au
       'There is no fixed round budget. AGREE only when the client\'s problem is actually solved and the team\'s answer is complete. CONTINUE while a material flaw, missing piece, or unresolved disagreement remains.'
     );
   }
-  if (finalRound) {
+  if (finalRound && !blind) {
     lines.push(
       auto
         ? 'This is the last allowed round (safety cap). Converge now. Unless a truly blocking flaw remains, AGREE and nominate the best writer. If you must CONTINUE, name the single blocking issue in one sentence.'
@@ -97,7 +110,7 @@ function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, au
   return lines.join('\n');
 }
 
-function presenterSystemPrompt(seat, seats, { consensus = true, interrupted = false } = {}) {
+function presenterSystemPrompt(seat, seats, { consensus = true, interrupted = false, dissenters = [] } = {}) {
   const names = seats.map((s) => s.name).join(', ');
   const lines = [
     `You are ${seat.name}, one of ${seats.length} AI experts (${names}) who just finished discussing a client's task.`,
@@ -114,6 +127,10 @@ function presenterSystemPrompt(seat, seats, { consensus = true, interrupted = fa
   } else if (!consensus) {
     lines.push(
       'The team did not reach full consensus. Where positions still differed, resolve each point explicitly with your best judgment rather than papering over it.'
+    );
+  } else if (dissenters.length) {
+    lines.push(
+      `A majority agreed but ${joinNames(dissenters)} still dissented. Address the dissent explicitly in the body — adopt it where it is right, and say in one line why not where it is wrong.`
     );
   }
   return lines.join('\n');
@@ -203,8 +220,11 @@ function buildDebateTurnMessage({
  */
 const DEBATE_STATUS_RE =
   /[*_`~]{0,3}\[?\s*STATUS\s*:\s*(CONTINUE|AGREE)\b\s*(?:\|\s*NOMINATE\s*:\s*([^\]\n|]+?)\s*)?\]?[*_`~]{0,3}/i;
+// The optional `[-*>]` prefix: models put the marker in a bullet or a quote
+// ("- [STATUS: …]", "> [STATUS: …]"), which used to read as CONTINUE with the
+// marker left in the visible text.
 const DEBATE_STATUS_FIND_RE =
-  /(?:^|\n)([ \t]*[*_`~]{0,3}\[?\s*STATUS\s*:\s*(CONTINUE|AGREE)\b)/gi;
+  /(?:^|\n)([ \t]*(?:[-*>]\s+)?[*_`~]{0,3}\[?\s*STATUS\s*:\s*(CONTINUE|AGREE)\b)/gi;
 
 function parseDebateStatus(text) {
   const s = String(text == null ? '' : text);
@@ -238,7 +258,7 @@ function parseDebateStatus(text) {
 function isDebateStatusishLine(line) {
   const lastLine = String(line || '')
     .trim()
-    .replace(/^[*_`~]{0,3}/, '');
+    .replace(/^(?:[-*>]\s+)?[*_`~]{0,3}/, '');
   if (!lastLine) return false;
   // Partial bracketed marker as it is typed (`[`, `[S`, `[STAT`, …)
   if (/^\[\s*(s(t(a(t(u(s[\s\S]*)?)?)?)?)?)?$/i.test(lastLine)) return true;
@@ -302,7 +322,9 @@ function matchSeatByName(name, seats) {
     if (!sn) continue;
     const shorter = sn.length <= n.length ? sn : n;
     const longer = sn.length <= n.length ? n : sn;
-    const re = new RegExp(`(?:^|[^a-z0-9])${escapeSeatNameRe(shorter)}(?:[^a-z0-9]|$)`, 'i');
+    // Unicode letters count as word characters: with [^a-z0-9] the "ë" in
+    // "Zoë" was a boundary, so "Zo" matched as a whole word inside it.
+    const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeSeatNameRe(shorter)}(?:[^\\p{L}\\p{N}]|$)`, 'iu');
     if (!re.test(longer)) continue;
     if (sn.length > bestLen) {
       best = s;
@@ -347,12 +369,21 @@ function debateLiveSeats(seats) {
 }
 
 /**
- * Consensus = every live seat agrees. Fewer than two live seats cannot claim
- * it — a remaining monologue is not a team.
+ * Consensus = every live seat agrees ('all'), or more than half of them
+ * ('majority'). Fewer than two live seats cannot claim it — a remaining
+ * monologue is not a team. Two seats need both either way.
  */
-function debateHasConsensus(seats) {
+function debateHasConsensus(seats, mode = 'all') {
   const live = debateLiveSeats(seats);
-  return live.length >= 2 && live.every((s) => s.status === 'agree');
+  if (live.length < 2) return false;
+  const agreed = live.filter((s) => s.status === 'agree').length;
+  if (normalizeDebateConsensusMode(mode) === 'majority') return agreed * 2 > live.length;
+  return agreed === live.length;
+}
+
+/** Live seats that did NOT agree — named on the majority credit line. */
+function debateDissenters(seats) {
+  return debateLiveSeats(seats).filter((s) => s.status !== 'agree');
 }
 
 /**
@@ -420,12 +451,5 @@ function debateAnswerAttribution({ judgeDelivered = false, judgeSeat = null, sea
 }
 
 export {
-  DEBATE_MAX_SEATS, DEBATE_MAX_ROUNDS, DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA,
-  debateSeatRangeLabel, normalizeDebateRoundMode, debateRoundBudget,
-  joinNames, expertSystemPrompt, presenterSystemPrompt, judgeSystemPrompt,
-  formatDebateTranscript, buildDebateTurnMessage,
-  DEBATE_STATUS_RE, DEBATE_STATUS_FIND_RE, parseDebateStatus, stripStreamingStatusTail,
-  debateTurnSpeaker, matchSeatByName, pickDebatePresenter,
-  debateLiveSeats, debateHasConsensus, applyDebateVote, discardOpeningVotes,
-  dropDebateSeat, debateAnswerAttribution
+  DEBATE_MAX_SEATS, DEBATE_MAX_ROUNDS, DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA, debateSeatRangeLabel, normalizeDebateRoundMode, debateRoundBudget, joinNames, expertSystemPrompt, presenterSystemPrompt, judgeSystemPrompt, formatDebateTranscript, buildDebateTurnMessage, DEBATE_STATUS_RE, DEBATE_STATUS_FIND_RE, parseDebateStatus, stripStreamingStatusTail, debateTurnSpeaker, matchSeatByName, pickDebatePresenter, debateLiveSeats, debateHasConsensus, applyDebateVote, discardOpeningVotes, dropDebateSeat, debateAnswerAttribution, normalizeDebateConsensusMode, debateDissenters
 };

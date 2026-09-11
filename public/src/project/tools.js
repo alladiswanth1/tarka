@@ -32,7 +32,11 @@ async function executeAgentBlock(block, seat, opts) {
         id: activeProject.id, op: block.kind, path: block.path, content: block.content
       }, sig);
       const r = data.result;
-      return done(true, block.kind, { path: block.path, content: block.content },
+      // Journal args carry the path only: the whole file used to be persisted
+      // per write, and a few large rewrites evicted every other event from the
+      // 400KB journal tail the next session restores from. Repeat detection
+      // keys on the fence payload separately (projectToolCallPayload).
+      return done(true, block.kind, { path: block.path, bytes: r.bytes },
         `${block.kind === 'append' ? 'appended to' : 'wrote'} ${r.path} — ${r.lines} lines (${r.bytes} bytes)`);
     }
 
@@ -54,7 +58,7 @@ async function executeAgentBlock(block, seat, opts) {
         content = content.slice(0, first) + replace + content.slice(first + find.length);
       }
       await pjApi('/api/project/fs', { id: activeProject.id, op: 'write', path: block.path, content }, sig);
-      return done(true, 'edit', { path: block.path, edits: block.edits }, `applied ${block.edits.length} edit${block.edits.length === 1 ? '' : 's'} to ${block.path}`);
+      return done(true, 'edit', { path: block.path, edits: block.edits.length }, `applied ${block.edits.length} edit${block.edits.length === 1 ? '' : 's'} to ${block.path}`);
     }
 
     // JSON tools
@@ -88,10 +92,15 @@ async function executeAgentBlock(block, seat, opts) {
         exitCode: r.code,
         aborted: r.aborted
       });
+      // The server's `note` (a backgrounded process still holds the pipes)
+      // and `truncated` must reach the model, or it fights the port next turn
+      // and trusts output that was cut at the cap.
       const out = [
         `exit ${facts.exitCode}${facts.timedOut ? ' (TIMED OUT)' : ''}${facts.signal ? ` signal ${facts.signal}` : ''} · ${r.ms}ms`,
         r.stdout ? `stdout:\n${pjElide(r.stdout, 6000)}` : '',
-        r.stderr ? `stderr:\n${pjElide(r.stderr, 4000)}` : ''
+        r.stderr ? `stderr:\n${pjElide(r.stderr, 4000)}` : '',
+        r.truncated ? '(output truncated at the server cap — narrow the command to see the rest)' : '',
+        r.note ? `note: ${r.note}` : ''
       ].filter(Boolean).join('\n');
       // `ran` distinguishes "executed and exited non-zero" from "never ran":
       // the done-gate counts an executed command as work/inspection evidence
@@ -108,8 +117,14 @@ async function executeAgentBlock(block, seat, opts) {
       return done(true, tool, spec, `moved ${data.result.from} → ${data.result.to}`);
     }
     if (tool === 'task_add') {
-      const t = { id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), title: String(spec.title || '').slice(0, 200), status: 'todo', by: '' };
+      const t = { id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), title: String(spec.title || '').trim().slice(0, 200), status: 'todo', by: '' };
       if (!t.title) return done(false, tool, spec, 'task_add needs a title');
+      // Every fresh turn re-plans from the same brief, so the same task kept
+      // being added — one run left 24 copies of "write hello.js" on the board.
+      const dupe = projectTasks.find((x) => String(x.title || '').trim().toLowerCase() === t.title.toLowerCase());
+      if (dupe) {
+        return done(false, tool, spec, `already on the board as [${dupe.id}] (${dupe.status}${dupe.by ? `, ${dupe.by}` : ''}) — claim it with task_update instead of adding it again`);
+      }
       projectTasks.push(t);
       await pjSaveTasks();
       return done(true, tool, spec, `added [${t.id}] ${t.title}`);
@@ -123,14 +138,20 @@ async function executeAgentBlock(block, seat, opts) {
         }
         t.status = spec.status;
         if (spec.status === 'doing') t.by = seat.name;
+        // Back to todo releases the claim — otherwise only the original
+        // claimer could ever pick the task up again.
+        if (spec.status === 'todo') t.by = '';
       }
       if (spec.note) t.note = String(spec.note).slice(0, 300);
       await pjSaveTasks();
       return done(true, tool, spec, `[${t.id}] → ${t.status}${t.by ? ` (${t.by})` : ''}`);
     }
     if (tool === 'decision') {
-      const text = String(spec.text || '').slice(0, 1000);
+      const text = String(spec.text || '').trim().slice(0, 1000);
       if (!text) return done(false, tool, spec, 'decision needs text');
+      if (projectDecisions.some((d) => String(d.text || '').trim().toLowerCase() === text.toLowerCase())) {
+        return done(true, tool, spec, `already recorded: ${text.slice(0, 120)}`);
+      }
       try {
         const data = await pjApi('/api/project/decision', { id: activeProject.id, by: seat.name, text }, sig);
         setProjectDecisions(data.decisions || projectDecisions);
@@ -143,6 +164,7 @@ async function executeAgentBlock(block, seat, opts) {
       if (!question) return done(false, 'debate', spec, 'debate needs a question');
       const takes = await runProjectCouncil(question, seat, opts);
       if (takes === null) return done(false, 'debate', spec, 'debate aborted');
+      if (!takes.length) return done(false, 'debate', spec, 'no teammates to consult on a one-member team — decide it yourself and record a decision');
       pjEmit({ type: 'council', by: seat.name, question, takes });
       const convo = takes.map((t) => `${t.name}: ${t.text}`).join('\n\n');
       return done(true, 'debate', spec, `${takes.length} teammates answered`, `TEAM TAKES on "${question}":\n${convo}\n\nWeigh these and decide.`);
@@ -160,7 +182,18 @@ async function executeAgentBlock(block, seat, opts) {
 /** One blind round of teammate takes on a contested question */
 async function runProjectCouncil(question, askingSeat, opts) {
   const seats = projectSeats().filter((s) => s.i !== askingSeat.i && s.provider);
+  if (!seats.length) return [];
   const cfg = getConfig();
+  // Teammates answered the bare question with no idea what was on the board
+  // or already decided — give them the same context the asker has.
+  const boardCtx = [
+    projectTasks.length
+      ? 'TASK BOARD:\n' + projectTasks.slice(0, 20).map((t) => `- [${t.status}] ${t.title}${t.by ? ` (${t.by})` : ''}`).join('\n')
+      : '',
+    projectDecisions.length
+      ? 'DECISIONS SO FAR:\n' + projectDecisions.slice(-8).map((d) => `- ${d.text} (${d.by})`).join('\n')
+      : ''
+  ].filter(Boolean).join('\n\n');
   const results = await Promise.all(seats.map(async (s) => {
     try {
       const r = await streamCompletion({
@@ -176,7 +209,7 @@ async function runProjectCouncil(question, askingSeat, opts) {
         systemPrompt:
           `You are ${s.name}, an AI engineer on a project team. ${askingSeat.name} asked the team a contested question. ` +
           'Think it through at full depth, then give your independent, decisive take in under 120 words. Commit to a position. No tools, no hedging.',
-        messages: [{ role: 'user', content: question }],
+        messages: [{ role: 'user', content: boardCtx ? `${boardCtx}\n\nQUESTION: ${question}` : question }],
         signal: opts.signal,
         shouldCancel: opts.stale
       });
@@ -190,7 +223,5 @@ async function runProjectCouncil(question, askingSeat, opts) {
   if (opts.stale() || results.some((r) => r === null && opts.signal.aborted)) return null;
   return results.filter(Boolean);
 }
-
-/* ---------- prompts ---------- */
 
 export { executeAgentBlock, pjSaveTasks, runProjectCouncil };

@@ -436,9 +436,16 @@ test('debateRoundBudget: fixed uses N, auto uses the safety cap', () => {
   assert.equal(D.normalizeDebateRoundMode('fixed'), 'fixed');
   assert.equal(D.normalizeDebateRoundMode('nope'), 'fixed');
   assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 4 }), 4);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 1 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 8 }), 8);
   assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 99 }), D.DEBATE_MAX_ROUNDS);
   assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: 0 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: -3 }), 1);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed', maxRounds: '5' }), 5);
+  assert.equal(D.debateRoundBudget({ roundMode: 'fixed' }), 4);
   assert.equal(D.debateRoundBudget({ roundMode: 'auto', maxRounds: 2 }), D.DEBATE_AUTO_MAX_ROUNDS);
+  assert.equal(D.DEBATE_MAX_ROUNDS, 8);
+  assert.equal(D.DEBATE_AUTO_MAX_ROUNDS, 12);
   assert.ok(D.DEBATE_AUTO_MAX_ROUNDS > D.DEBATE_MAX_ROUNDS);
 });
 
@@ -674,6 +681,17 @@ test('the done gate refuses no session work and a verifier who inspected nothing
   assert.equal(ok.refusal, '');
   assert.equal(ok.sessionWork, 3);
 
+  // list_files is inspection: enough for a verifier once the session did real work
+  const listVerify = P.evaluateProjectDoneClaim({
+    status: 'done',
+    did: { work: 0, inspect: 1 },
+    sessionWork: 4,
+    verifying: true,
+    seatName: 'Bev'
+  });
+  assert.equal(listVerify.accept, true, 'list_files inspects; session work already happened');
+  assert.equal(listVerify.refusal, '');
+
   const working = P.evaluateProjectDoneClaim({
     status: 'working',
     did: { work: 2, inspect: 1 },
@@ -751,6 +769,39 @@ test('a repeated identical tool call is not fresh progress', () => {
   assert.equal(other.repeat, false);
 });
 
+test('a failed tool result does not occupy the repeat slot — a later success still counts', () => {
+  const fail = { ok: false, tool: 'read_file', detail: 'not found' };
+  const ok = { ok: true, tool: 'read_file', detail: 'ok 12 lines' };
+  const blockedRun = { ok: false, tool: 'run' };
+  const ran = { ok: false, tool: 'run', ran: true, detail: 'exit 1' };
+
+  assert.equal(P.projectToolResultCounts(fail), false);
+  assert.equal(P.projectToolResultCounts(ok), true);
+  assert.equal(P.projectToolResultCounts(blockedRun), false, 'a blocked run never started');
+  assert.equal(P.projectToolResultCounts(ran), true, 'an executed run still counts');
+  assert.equal(P.projectToolResultCounts(null), false);
+
+  const did = { work: 0, inspect: 0 };
+  P.recordProjectToolEvidence(fail, did);
+  assert.equal(did.inspect, 0);
+  assert.equal(did.work, 0);
+
+  const seen = new Map();
+  const key = P.projectToolCallKey('read_file', { path: 'a.js' });
+  // Engine only notes counting results. A failure never enters `seen`.
+  assert.equal(P.projectToolResultCounts(fail), false);
+  assert.equal(seen.size, 0);
+
+  const firstOk = P.noteRepeatToolCall(seen, key, ok.detail);
+  assert.equal(firstOk.repeat, false);
+  P.recordProjectToolEvidence(ok, did);
+  assert.equal(did.inspect, 1);
+  assert.equal(did.work, 1);
+
+  const again = P.noteRepeatToolCall(seen, key, 'second look');
+  assert.equal(again.repeat, true, 'the identical success is not fresh progress');
+});
+
 test('write/edit identity uses the full fence payload, not just the path', () => {
   const twoWrites = P.parseAgentResponse(
     '```write src/a.js\nfirst\n```\n```write src/a.js\nsecond\n```'
@@ -804,4 +855,127 @@ test('commandExitFacts does not treat a timeout or signal as a clean success', (
   assert.equal(facts.timedOut, true);
   assert.equal(facts.signal, 'SIGKILL');
   assert.equal(facts.exitCode, 0);
+});
+
+/* ---------------- regressions from the second audit ---------------- */
+
+/*
+ * The closing fence must be a line of its own. With the closer unanchored,
+ * the lazy body stopped at the first ``` that merely ENDED a line — a README
+ * sentence like "Wrap code in ```" truncated the file, the rest spilled into
+ * the prose, and the write reported OK so nothing told the model.
+ */
+test('a write body containing a line that ends with ``` is not truncated', () => {
+  const out = P.parseAgentResponse('```write README.md\nWrap code in ```\nline two\n```\nDone.');
+  assert.equal(out.blocks.length, 1);
+  assert.equal(out.blocks[0].content, 'Wrap code in ```\nline two\n');
+  assert.equal(out.prose.trim(), 'Done.');
+});
+
+test('write fences with empty bodies and inner markdown fences still parse', () => {
+  const empty = P.parseAgentResponse('```write a.txt\n```');
+  assert.equal(empty.blocks.length, 1);
+  assert.equal(empty.blocks[0].content, '\n', 'files always end in a newline');
+  // A tagged opener (```sh) is content; the first BARE ``` line closes the
+  // write — the documented limit, which is why the prompt points at
+  // append/edit for files that need a bare fence line.
+  const nested = P.parseAgentResponse('```write doc.md\n# Title\n\n```sh\nnpm test\n```\n\nafter\n```\n');
+  assert.equal(nested.blocks[0].content, '# Title\n\n```sh\nnpm test\n');
+  assert.match(nested.prose, /after/);
+  const indented = P.parseAgentResponse('```write b.txt\nx\n  ```\n');
+  assert.equal(indented.blocks.length, 1);
+  assert.equal(indented.blocks[0].content, 'x\n');
+});
+
+test('a tool block whose JSON is not an object is refused with a reason', () => {
+  for (const body of ['[1,2]', '"x"', 'null', '5']) {
+    const out = P.parseAgentResponse('```tool\n' + body + '\n```');
+    assert.equal(out.blocks.length, 1, body);
+    assert.match(String(out.blocks[0].err || ''), /JSON object/, body);
+  }
+});
+
+test('parseDebateStatus reads a marker inside a bullet or a quote', () => {
+  for (const t of [
+    'Take.\n- [STATUS: AGREE | NOMINATE: Kai]',
+    'Take.\n> [STATUS: AGREE | NOMINATE: Kai]',
+    'Take.\n* **[STATUS: AGREE | NOMINATE: Kai]**'
+  ]) {
+    const r = D.parseDebateStatus(t);
+    assert.equal(r.status, 'agree', t);
+    assert.equal(r.nominee, 'Kai', t);
+    assert.doesNotMatch(r.cleanText, /STATUS/, t);
+  }
+  assert.equal(D.parseDebateStatus('Take.\n> [STATUS: CONTINUE]').status, 'continue');
+});
+
+test('a decorated TO: still reaches the named seat', () => {
+  const seats = [{ name: 'Ada', i: 0 }, { name: 'Bev', i: 1 }, { name: 'Al', i: 2 }];
+  for (const to of ['Bev', '@Bev', '**Bev**', 'Bev (backend)', 'bev — the reviewer']) {
+    const r = P.resolveProjectNextSeat({ to, seats, currentIndex: 0 });
+    assert.equal(r.nextIndex, 1, to);
+  }
+  // A shorter name must not steal a handoff meant for a longer one: no seat
+  // matches "Alice", so it round-robins from seat 1 to seat 2 — but via the
+  // fallback, not via "Al".
+  const fuzzy = P.resolveProjectNextSeat({ to: 'Alice', seats, currentIndex: 1 });
+  assert.equal(fuzzy.target, null, '"Al" must not claim "Alice"');
+  assert.equal(P.resolveProjectNextSeat({ to: 'auto', seats, currentIndex: 1 }).nextIndex, 2);
+});
+
+test('uniqueSeatNames disambiguates duplicates case-insensitively', () => {
+  assert.deepEqual(P.uniqueSeatNames(['Expert 3', 'expert 3', 'Ada', '']), ['Expert 3', 'expert 3 2', 'Ada', 'Member 4']);
+});
+
+/* ---------------- one-member projects, Auto run mode, majority consensus ---------------- */
+
+test('a one-member project hands off to itself and is prompted as a solo engineer', () => {
+  const seats = [{ name: 'Ada', i: 0 }];
+  const r = P.resolveProjectNextSeat({ to: 'auto', seats, currentIndex: 0, currentSeat: seats[0], doneStreak: 1 });
+  assert.equal(r.nextIndex, 0);
+  assert.equal(r.selfHandoffIgnored, false, 'a solo seat verifies its own claim next turn');
+  const solo = P.buildProjectSystemPrompt(seats[0], seats, { verify: true });
+  assert.match(solo, /sole AI engineer/);
+  assert.doesNotMatch(solo, /debate\{question\}/, 'no council tool without teammates');
+  assert.match(solo, /Last turn you claimed/);
+  assert.match(solo, /automated checks/);
+  const team = P.buildProjectSystemPrompt({ name: 'Ada', i: 0 }, [{ name: 'Ada', i: 0 }, { name: 'Bev', i: 1 }], { verify: true });
+  assert.match(team, /one of 2 AI engineers/);
+  assert.match(team, /A teammate believes/);
+  assert.ok(P.PJ_AUTO_MAX_TURNS >= 80, 'auto mode has a runaway cap');
+});
+
+test('a team of two still refuses a self-handoff on a pending done claim', () => {
+  const seats = [{ name: 'Ada', i: 0 }, { name: 'Bev', i: 1 }];
+  const r = P.resolveProjectNextSeat({ to: 'Ada', seats, currentIndex: 0, currentSeat: seats[0], doneStreak: 1 });
+  assert.equal(r.selfHandoffIgnored, true);
+  assert.equal(r.nextIndex, 1);
+});
+
+test('majority consensus needs more than half of the live seats; unanimous needs all', () => {
+  const mk = (statuses) => statuses.map((status, i) => ({ i, name: `S${i}`, status }));
+  assert.equal(D.debateHasConsensus(mk(['agree', 'agree', 'continue']), 'majority'), true);
+  assert.equal(D.debateHasConsensus(mk(['agree', 'agree', 'continue']), 'all'), false);
+  assert.equal(D.debateHasConsensus(mk(['agree', 'continue', 'continue']), 'majority'), false);
+  assert.equal(D.debateHasConsensus(mk(['agree', 'continue']), 'majority'), false, 'two seats need both');
+  assert.equal(D.debateHasConsensus(mk(['agree', 'agree', 'continue', 'agree', 'continue']), 'majority'), true);
+  const withDrop = mk(['agree', 'agree', 'continue']);
+  withDrop[2].dropped = true;
+  assert.equal(D.debateHasConsensus(withDrop, 'all'), true, 'a dropped seat no longer counts');
+  assert.deepEqual(D.debateDissenters(mk(['agree', 'continue', 'agree'])).map((s) => s.name), ['S1']);
+  assert.equal(D.normalizeDebateConsensusMode('majority'), 'majority');
+  assert.equal(D.normalizeDebateConsensusMode('anything'), 'all');
+});
+
+test('the expert prompt tells the truth about what happens next', () => {
+  const seats = [{ name: 'Nova', persona: 'x' }, { name: 'Kai', persona: 'y' }];
+  const onlyRound = D.expertSystemPrompt(seats[0], seats, { blind: true, finalRound: true });
+  assert.match(onlyRound, /only round/);
+  assert.doesNotMatch(onlyRound, /next round/);
+  const opening = D.expertSystemPrompt(seats[0], seats, { blind: true, finalRound: false });
+  assert.match(opening, /next round/);
+  const majority = D.expertSystemPrompt(seats[0], seats, { consensusMode: 'majority' });
+  assert.match(majority, /MAJORITY/);
+  const presenter = D.presenterSystemPrompt(seats[0], seats, { consensus: true, dissenters: ['Kai'] });
+  assert.match(presenter, /Kai still dissented/);
 });

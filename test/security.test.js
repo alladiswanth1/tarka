@@ -247,3 +247,18 @@ test('isPrivateIp: non-canonical IPv6 spellings classify like their canonical fo
   assert.equal(isPrivateIp('1:2:3:4:5:6:7:8:9'), true);
   assert.equal(isPrivateIp('::gggg'), true);
 });
+
+test('isOwnAddress recognises this machine’s interface addresses and nothing else', () => {
+  const os = require('os');
+  const { isOwnAddress, assertProxyTargetAllowed } = require('../lib/security');
+  const own = Object.values(os.networkInterfaces()).flat().map((e) => e.address).filter(Boolean);
+  for (const a of own) assert.equal(isOwnAddress(a), true, a);
+  assert.equal(isOwnAddress('203.0.113.9'), false);
+  assert.equal(isOwnAddress(''), false);
+  // A remote client naming one of our own addresses is refused before DNS
+  const remote = { socket: { remoteAddress: '203.0.113.5' } };
+  return assert.rejects(
+    assertProxyTargetAllowed(remote, new URL(`http://${own.find((a) => !a.includes(':')) || '127.0.0.1'}/v1`)),
+    /own address|internal\/private/
+  );
+});

@@ -3,6 +3,7 @@ import { restoreDebateArena } from './debate/arena.js';
 import { historyQuotaWarned, setHistoryQuotaWarned, truncateDebateRecord } from './history.js';
 import { debateExpertNames, isDebateMode, projectMode, setProjectMode } from './project/state.js';
 import { $, HISTORY_KEY, HISTORY_MAX, chatSession, historySaveTimer, isStreaming, messages, messagesEl, mobileMq, setAbortController, setChatSession, setHistorySaveTimer, setLastCompletionTokens, setLastGenStats, setLastPromptTokens, setMessages, statusText, tokenInfo } from './state.js';
+import { escapeHtml } from './markdown.js';
 import { estimateTokens } from './tokens.js';
 import { MARK_SVG, primeMarks } from './ui/mark.js';
 import { closeSidebar } from './ui/sidebar.js';
@@ -134,6 +135,33 @@ function initSessions() {
     } catch {
       /* storage unavailable */
     }
+  }
+  // Adopt chats whose blob exists but whose index entry was lost — the blob
+  // is written before the index, so a quota failure on the index write left
+  // an unlisted chat that pruneSessions could never reclaim.
+  try {
+    const known = new Set(sessionIndex.map((s) => s.id));
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(SESSION_PREFIX)) continue;
+      const id = key.slice(SESSION_PREFIX.length);
+      if (known.has(id)) continue;
+      let arr = [];
+      try {
+        arr = JSON.parse(localStorage.getItem(key) || '[]');
+      } catch {
+        arr = [];
+      }
+      if (!Array.isArray(arr) || !arr.length) {
+        localStorage.removeItem(key);
+        i--;
+        continue;
+      }
+      sessionIndex.push({ id, title: sessionTitleFrom(arr), at: Date.now(), up: Date.now(), n: arr.length });
+      known.add(id);
+    }
+  } catch {
+    /* storage unavailable */
   }
   if (!sessionIndex.some((s) => s.id === activeSessionId)) {
     activeSessionId = sessionIndex[0]?.id || '';
@@ -288,18 +316,31 @@ function deleteSession(id) {
   flashStatus('Chat deleted');
 }
 
-function saveHistory() {
+function saveHistory({ force = false } = {}) {
   // Mid-stream saves are deferred, not DROPPED: a save scheduled just before
   // streaming began (the user's own turn, or a regenerate's pop) used to be
   // silently discarded, so closing the tab during a multi-minute generation
   // lost the message — or resurrected the reply regenerate had deleted.
-  if (isStreaming) {
+  // `force` is the pagehide path: deferral only helps while the tab lives.
+  if (isStreaming && !force) {
     clearTimeout(historySaveTimer);
     setHistorySaveTimer(setTimeout(saveHistory, 500));
     return;
   }
   if (!activeSessionId) return;
-  const slim = messages.slice(-HISTORY_MAX).map((m) => {
+  if (writeSessionBlob(activeSessionId, messages)) {
+    touchSessionMeta();
+    return;
+  }
+  if (!historyQuotaWarned) {
+    setHistoryQuotaWarned(true);
+    flashStatus('⚠ Browser storage is full — this chat cannot be saved', 4000);
+  }
+}
+
+/** Write one session's messages with the quota ladder; true when something landed. */
+function writeSessionBlob(sessionId, msgs) {
+  const slim = msgs.slice(-HISTORY_MAX).map((m) => {
     const o = { role: m.role, content: m.content };
     if (m.reasoning) o.reasoning = String(m.reasoning).slice(0, 24_000);
     if (m.reasoningMs) o.reasoningMs = m.reasoningMs;
@@ -324,17 +365,34 @@ function saveHistory() {
   ];
   for (const build of attempts) {
     try {
-      localStorage.setItem(SESSION_PREFIX + activeSessionId, JSON.stringify(build()));
-      touchSessionMeta();
-      return;
+      localStorage.setItem(SESSION_PREFIX + sessionId, JSON.stringify(build()));
+      return true;
     } catch {
       /* try a smaller shape */
     }
   }
-  if (!historyQuotaWarned) {
-    setHistoryQuotaWarned(true);
-    flashStatus('⚠ Browser storage is full — this chat cannot be saved', 4000);
+  return false;
+}
+
+/**
+ * A reply that finished streaming AFTER the user switched away from its chat
+ * still belongs to that chat. The live `messages` array now holds another
+ * session, so the captured array is written straight to the old session's
+ * blob (and its index entry refreshed) — without this the old chat reopened
+ * with the question and no answer.
+ */
+function persistSessionSnapshot(sessionId, msgs) {
+  if (!sessionId || sessionId === activeSessionId) return false;
+  if (!writeSessionBlob(sessionId, msgs)) return false;
+  const s = sessionIndex.find((x) => x.id === sessionId);
+  if (s) {
+    s.up = Date.now();
+    s.n = msgs.length;
+    if (!s.title || s.title === 'New chat') s.title = sessionTitleFrom(msgs);
+    saveSessionIndex();
+    renderSessionList();
   }
+  return true;
 }
 
 function loadHistory() {
@@ -376,7 +434,7 @@ function welcomeHtml() {
       <div class="welcome-icon">${MARK_SVG}</div>
       <h1>Debate</h1>
       <p>A team of experts discusses the task, then one writes the answer.<br/>Give every seat a model in the Debate panel, then describe the task.</p>
-      <p class="welcome-sub">${names || 'Add at least two experts'}</p>
+      <p class="welcome-sub">${escapeHtml(names) || 'Add at least two experts'}</p>
       <div class="quick-tips">
         <button type="button" class="tip" data-prompt="Compare two approaches and recommend one, with the tradeoffs named.">Compare approaches</button>
         <button type="button" class="tip" data-prompt="Design a small system, then stress-test the design before the final write-up.">Design + critique</button>
@@ -435,4 +493,4 @@ function buildRestoredReasoningPanel(text, ms) {
 
 function setActiveSessionId(v) { activeSessionId = v; return v; }
 
-export { ACTIVE_SESSION_KEY, SESSIONS_INDEX_KEY, SESSIONS_MAX, SESSION_PREFIX, activeSessionId, buildRestoredReasoningPanel, deleteSession, flushPendingHistorySave, initSessions, loadHistory, loadSessionIndex, newSessionId, pruneSessions, relTime, renameSession, renderHistoryFromState, renderSessionList, resetChatUiState, saveHistory, saveSessionIndex, sessionIndex, sessionTitleFrom, setActiveSessionId, switchSession, touchSessionMeta };
+export { ACTIVE_SESSION_KEY, SESSIONS_INDEX_KEY, SESSIONS_MAX, SESSION_PREFIX, activeSessionId, buildRestoredReasoningPanel, deleteSession, flushPendingHistorySave, initSessions, loadHistory, loadSessionIndex, newSessionId, persistSessionSnapshot, pruneSessions, relTime, renameSession, renderHistoryFromState, renderSessionList, resetChatUiState, saveHistory, saveSessionIndex, sessionIndex, sessionTitleFrom, setActiveSessionId, switchSession, touchSessionMeta, writeSessionBlob };

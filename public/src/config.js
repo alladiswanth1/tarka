@@ -13,7 +13,7 @@ function getConfig() {
     apiKey: (provider.apiKey || '').trim(),
     providerId: provider.id,
     providerName: provider.name,
-    model: $('#model').value.trim() || 'moonshotai/kimi-k3',
+    model: $('#model').value.trim(),
     reasoningEffort: $('#reasoningEffort').value,
     // temperature 0 is valid — avoid `|| 0.7` which would coerce 0 → 0.7
     temperature: (() => {
@@ -92,7 +92,5 @@ function saveConfig() {
   flashStatus('Config saved ✓');
   scheduleContextDetect();
 }
-
-/** Normalize a favorite entry to { id, providerId } */
 
 export { configSaveTimer, getConfig, loadConfig, saveConfig, scheduleConfigAutosave, writeConfigToStorage };

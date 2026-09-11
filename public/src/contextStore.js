@@ -87,7 +87,12 @@ function getCachedContext(providerId, modelId) {
     const limit = isFresh(hit);
     if (!limit) continue;
     const mid = key.slice(prefix.length);
-    if (mid.toLowerCase() === want.toLowerCase() || !modelIdsRelated(mid, want)) continue;
+    // A case-insensitive exact id is THE answer (the catalog said
+    // "Meta-Llama-3.1-8B-Instruct", the user typed it lowercase) — it used to
+    // be skipped here and fall through to getSharedContext, which excludes
+    // this provider on purpose.
+    if (mid.toLowerCase() === want.toLowerCase()) return limit;
+    if (!modelIdsRelated(mid, want)) continue;
     if ((hit.at || 0) > bestAt) {
       best = limit;
       bestAt = hit.at || 0;

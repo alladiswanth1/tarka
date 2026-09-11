@@ -83,3 +83,21 @@ test('anti-framing headers are sent on pages and API responses', async () => {
     await tarka.close();
   }
 });
+
+/*
+ * Behind a reverse proxy every client is 127.0.0.1 to Node. TARKA_BEHIND_PROXY
+ * says "nobody is local", closing Project Mode and the local CLI seats.
+ */
+test('TARKA_BEHIND_PROXY=1 makes loopback-only routes refuse the local socket', async () => {
+  const tarka = await startTarka({ TARKA_BEHIND_PROXY: '1' });
+  try {
+    const r = await fetch(`${tarka.origin}/api/projects`);
+    assert.equal(r.status, 403);
+    const a = await fetch(`${tarka.origin}/api/agents/local`);
+    assert.equal(a.status, 403);
+    const h = await fetch(`${tarka.origin}/api/health`);
+    assert.equal(h.status, 200, 'ordinary routes still work');
+  } finally {
+    await tarka.close();
+  }
+});

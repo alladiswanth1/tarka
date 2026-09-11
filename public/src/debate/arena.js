@@ -95,7 +95,8 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
         c.classList.toggle('speaking', Number(c.dataset.i) === i);
       });
       const speaker = seats.find((s) => s.i === i);
-      const others = seats.filter((s) => s.i !== i).map((s) => s.name);
+      // A dropped seat is not listening — its provider is gone
+      const others = seats.filter((s) => s.i !== i && !s.dropped).map((s) => s.name);
       if (speaker) subEl.textContent = `${speaker.name} speaking · ${joinNames(others)} listening`;
     },
     setAllSpeaking() {
@@ -210,9 +211,10 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
       const dur = durText !== undefined ? durText : `for ${formatThoughtDuration(performance.now() - startedAt)}`;
       let label = dur ? `Debated ${dur} · ${rounds} round${rounds === 1 ? '' : 's'}` : `Team debate · ${rounds} round${rounds === 1 ? '' : 's'}`;
       if (presenter) label += ` · Presented by ${presenter}`;
+      // A team that agreed after a seat dropped still agreed — the record and
+      // the mark flash say consensus, so the label must not say "error".
       if (stopped) label += ' · stopped';
-      else if (errored) label += ' · error';
-      else if (!consensus) label += ' · no full consensus';
+      else if (!consensus) label += errored ? ' · error' : ' · no full consensus';
       titleEl.textContent = label;
       subEl.textContent = 'Tap to expand the team discussion';
       panel.classList.remove('open');
@@ -224,12 +226,6 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
     }
   };
 }
-
-/**
- * Credit line above the final answer.
- * Nominated (default): "{name} presents, on behalf of …"
- * Judge: "Final answer by Judge (model-id) · debated by …"
- */
 
 /**
  * Credit line above the final answer.

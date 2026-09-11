@@ -18,7 +18,7 @@
   --line-2: #333b4d;
   --text: #e6e9f0;
   --text-muted: #9aa3b8;
-  --text-dim: #646d82;
+  --text-dim: #8089a3; /* ≥4.3:1 on every surface — #646d82 measured 2.9–3.7 */
   --accent: #6366f1;
   --accent-hover: #818cf8;
   --accent-soft: rgba(99, 102, 241, 0.14);
@@ -199,7 +199,7 @@ select {
 .provider-meta { display: block; font-family: var(--mono); font-size: 0.64rem; color: var(--text-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .provider-empty { padding: 12px; text-align: center; font-size: 0.75rem; color: var(--text-dim); background: var(--panel-2); border-radius: var(--radius-sm); }
 .provider-row .provider-edit { opacity: 0; }
-.provider-row:hover .provider-edit, .provider-row.active .provider-edit { opacity: 1; }
+.provider-row:hover .provider-edit, .provider-row:focus-within .provider-edit, .provider-row.active .provider-edit { opacity: 1; }
 .provider-row.not-ready { opacity: 0.62; }
 .local-agent-list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .local-agent-chip { margin: 0; }
@@ -234,7 +234,7 @@ select {
 .session-title { display: block; font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-meta { display: block; font-size: 0.64rem; color: var(--text-dim); margin-top: 2px; }
 .session-row .icon-btn { opacity: 0; }
-.session-row:hover .icon-btn, .session-row.active .icon-btn { opacity: 1; }
+.session-row:hover .icon-btn, .session-row:focus-within .icon-btn, .session-row.active .icon-btn { opacity: 1; }
 .session-empty { padding: 14px; text-align: center; font-size: 0.75rem; color: var(--text-dim); }
 
 /* ---- favourites ---- */
@@ -626,6 +626,9 @@ select {
 .pj-tool-label { flex: 1; min-width: 0; font-family: var(--mono); font-size: 0.71rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pj-tool-status { font-family: var(--mono); font-size: 0.63rem; color: var(--success); flex-shrink: 0; }
 .pj-tool.err .pj-tool-status { color: var(--error); }
+.pj-tool.pending { border-style: dashed; }
+.pj-tool.pending .pj-tool-status { color: var(--text-dim); animation: pjPending 1.2s ease-in-out infinite; }
+@keyframes pjPending { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 .pj-tool-chev { color: var(--text-dim); font-size: 0.6rem; transition: transform 0.22s; flex-shrink: 0; }
 .pj-tool.open .pj-tool-chev { transform: rotate(180deg); }
 .pj-tool-body { border-top: 1px solid var(--line); }
@@ -673,7 +676,7 @@ select {
 .error-retry:hover { background: var(--error); color: #fff; }
 
 .float-toast {
-  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 150;
+  position: fixed; left: 50%; bottom: calc(96px + var(--kb, 0px)); transform: translateX(-50%); z-index: 150;
   display: flex; align-items: center; gap: 10px; max-width: min(560px, 88vw);
   padding: 10px 12px 12px 14px; border-radius: var(--radius); overflow: hidden;
   background: var(--raised); border: 1px solid rgba(244, 63, 94, 0.4); box-shadow: var(--shadow);
@@ -830,7 +833,7 @@ select {
 
 /* ============================== COMMAND PALETTE ============================== */
 .cmdk-overlay {
-  position: fixed; inset: 0; z-index: 200; display: flex; justify-content: center; padding-top: 13vh;
+  position: fixed; inset: 0; z-index: 200; display: flex; justify-content: center; padding-top: 8dvh;
   background: rgba(7, 8, 12, 0.68); backdrop-filter: blur(4px); animation: fadeIn 0.16s ease;
 }
 .cmdk-overlay[hidden] { display: none; }
@@ -838,7 +841,7 @@ select {
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fadeOut { to { opacity: 0; } }
 .cmdk {
-  width: min(620px, 92vw); height: fit-content; max-height: 74vh; display: flex; flex-direction: column;
+  width: min(620px, 92vw); height: fit-content; max-height: calc(100dvh - var(--kb, 0px) - 16dvh); display: flex; flex-direction: column;
   border-radius: 14px; overflow: hidden; background: var(--raised); border: 1px solid var(--line-2);
   box-shadow: 0 30px 70px rgba(0, 0, 0, 0.6); animation: cmdkIn 0.2s var(--ease-out);
 }
@@ -982,7 +985,14 @@ body.is-streaming .tk-mark .tk-core { animation: tkBreathe 2.1s ease-in-out infi
 /* ============================== RESPONSIVE ============================== */
 @media (max-width: 1240px) {
   .inspector { display: none; }
-  #inspToggle { display: none; }
+  /* Below the docked breakpoint the pane opens as a sheet over the
+     transcript — a laptop used to lose the Project file tree, task board and
+     Stop button entirely. */
+  .inspector.overlay {
+    display: flex; flex-direction: column; position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(380px, 100vw); z-index: 90; background: var(--panel);
+    border-left: 1px solid var(--line); box-shadow: -18px 0 48px rgba(0, 0, 0, 0.55);
+  }
 }
 @media (hover: none) {
   .provider-row .provider-edit,
@@ -1011,8 +1021,21 @@ body.is-streaming .tk-mark .tk-core { animation: tkBreathe 2.1s ease-in-out infi
   .rail-btn { width: 34px; }
   .debate-toggle-label { display: none; }
   .debate-toggle { padding: 6px 9px; }
-  .token-info { display: none; }
+  .token-info, #currentReasoningLabel { display: none; }
 }
+
+/* Touch: the desktop-sized icon buttons are under the 44px target minimum. */
+@media (pointer: coarse) {
+  .icon-btn, .rail-btn, .send-btn, .scroll-fab, .msg-action-btn, .code-copy, .float-toast-x {
+    min-width: 40px; min-height: 40px;
+  }
+}
+
+/* Utility spacing — replaces the last inline style attributes so the CSP can
+   drop 'unsafe-inline' for styles. */
+.mt-10 { margin-top: 10px; }
+.mt-12 { margin-top: 12px; }
+.model-empty { justify-content: center; color: var(--text-dim); cursor: default; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

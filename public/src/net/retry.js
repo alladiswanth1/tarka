@@ -21,11 +21,43 @@ function errorMessage(err) {
   return String(err.message || err.error || err);
 }
 
+/** The HTTP status carried as DATA on an error object, when the proxy knew it. */
+function errorStatus(err) {
+  if (!err || typeof err !== 'object') return null;
+  const n = Number(err.status);
+  return Number.isInteger(n) && n >= 100 && n <= 599 ? n : null;
+}
+
+/**
+ * 4xx codes named in a message, so "HTTP 400: unavailable" is still a refusal.
+ * A code must stand alone: "try again in 425ms" is a duration, not a status —
+ * read as one it turned OpenAI's real 429 body into a non-retryable 425.
+ */
+function named4xx(msg) {
+  const codes = [];
+  const re = /(?:^|[^\w.])(4\d\d)(?![\w]|\.\d)/g;
+  for (let m; (m = re.exec(msg)); ) {
+    codes.push(m[1]);
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  return codes;
+}
+
 function isTransientProviderError(err) {
+  // Prefer the status the proxy attached over anything parsed out of prose.
+  const status = errorStatus(err);
+  if (status != null) {
+    if (status === 429 || status === 529 || status >= 500) return true;
+    if (status >= 400) return false;
+  }
   const msg = errorMessage(err);
   if (!msg) return false;
   // A 402-class refusal is not a blip, even if the body also says "unavailable".
   if (PAYMENT_REFUSAL_RE.test(msg)) return false;
+  // Other 4xx (except 429 rate-limit) are request refusals. "temporarily
+  // unavailable" in a 400/403/404 body must not flip them into a retry.
+  const fours = named4xx(msg);
+  if (fours.some((c) => c !== '429')) return false;
   return TRANSIENT_ERROR_RE.test(msg);
 }
 
@@ -56,7 +88,9 @@ function shouldRetryStream({
  */
 function soloAssistantDisposition({ fullContent, reasoningContent } = {}) {
   const text = String(fullContent || '');
-  if (text) {
+  // Whitespace-only is empty: some providers reject a blank assistant turn
+  // on the next request the same way they reject "".
+  if (text.trim()) {
     return { persist: true, display: 'content', content: text };
   }
   if (reasoningContent) {
@@ -76,6 +110,7 @@ function soloAssistantDisposition({ fullContent, reasoningContent } = {}) {
 export {
   TRANSIENT_ERROR_RE,
   PAYMENT_REFUSAL_RE,
+  errorStatus,
   isTransientProviderError,
   shouldRetryStream,
   soloAssistantDisposition

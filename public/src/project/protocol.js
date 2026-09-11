@@ -1,3 +1,4 @@
+import { matchSeatByName } from '../debate/protocol.js';
 /**
  * Project Mode's protocol: the system prompt every member works under, the
  * fenced-block tool syntax they emit, and the handoff marker that ends a turn.
@@ -16,12 +17,13 @@
  */
 
 /* ---------- agent output protocol ---------- */
-// The closing fence must sit on its own (possibly indented) line: with a bare
-// lazy `[\s\S]*?``` ` terminator, a write fence whose content contained a
-// markdown code fence (` ```sh `) was cut at that inner opener — the file was
-// silently truncated and the rest spilled into the prose. Models write
-// fenced markdown into READMEs constantly.
-const PJ_FENCE_RE = /```(tool|write|append|edit)([^\n]*)\n([\s\S]*?)\n?```[ \t]*\r?(?=\n|$)/g;
+// The closing fence must sit on its own (possibly indented) line — anchored
+// with a lookbehind, because the lazy body otherwise stops at the first ```
+// that merely ENDS a line ("Wrap code in ```"): the file was silently
+// truncated at that sentence and the rest spilled into the prose, and the
+// write reported OK so nothing told the model. Models write fenced markdown
+// into READMEs constantly, so this is the common case, not the odd one.
+const PJ_FENCE_RE = /```(tool|write|append|edit)([^\n]*)\n([\s\S]*?)\n?(?<=\n)[ \t]*```[ \t]*\r?(?=\n|$)/g;
 /**
  * The turn-ending handoff marker.
  *
@@ -98,6 +100,12 @@ function parseAgentResponse(text) {
       let err = null;
       try {
         spec = JSON.parse(body.trim());
+        // `[1,2]`, `"x"` and `null` parse fine and then reach the tools as
+        // `Unknown tool ""` — say what is actually wrong.
+        if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+          spec = null;
+          err = 'tool block must be a JSON object';
+        }
       } catch (e) {
         err = `Invalid JSON in tool block: ${e.message}`;
       }
@@ -226,11 +234,21 @@ function commandExitFacts({ timedOut = false, signal = null, exitCode = null, ab
 }
 
 /* ---------- prompts ---------- */
+/** Auto run mode keeps working until done is verified; this is only a runaway cap. */
+const PJ_AUTO_MAX_TURNS = 120;
+
 function buildProjectSystemPrompt(seat, seats, { verify = false } = {}) {
   const names = seats.map((s) => s.name).join(', ');
+  const solo = seats.length <= 1;
   const lines = [
-    `You are ${seat.name}, one of ${seats.length} AI engineers (${names}) collaborating as equals on one software project in a shared workspace folder. The user is your client.`,
-    seat.role ? `Your assigned focus: ${seat.role}` : 'No roles are assigned — self-organize around the task board.',
+    solo
+      ? `You are ${seat.name}, the sole AI engineer on one software project in a workspace folder. The user is your client.`
+      : `You are ${seat.name}, one of ${seats.length} AI engineers (${names}) collaborating as equals on one software project in a shared workspace folder. The user is your client.`,
+    seat.role
+      ? `Your assigned focus: ${seat.role}`
+      : solo
+        ? 'Organize your own work on the task board.'
+        : 'No roles are assigned — self-organize around the task board.',
     '',
     'WORKSPACE',
     '- All paths are relative to the project root. You can only touch files inside it.',
@@ -241,25 +259,35 @@ function buildProjectSystemPrompt(seat, seats, { verify = false } = {}) {
     '- No coasting: contribute real work each turn (build, verify, improve, or critically review a teammate\'s work). Never hand off after a token effort.',
     '- Craftsmanship counts even for one-line changes: naming, structure, edge cases, and a verification pass are part of "done".',
     '',
-    'COLLABORATION PROTOCOL',
-    '- The task board is the single source of truth. Claim a task (task_update → "doing") before working on it; NEVER work on a task a teammate has "doing". Mark "done" only after verifying.',
-    '- Early in a job, break the instruction into small concrete tasks (task_add). Add newly discovered work as tasks instead of doing it silently.',
-    '- Read files before editing them. Build on teammates\' work; never rewrite it wholesale without recording a decision.',
-    '- Record important choices with the decision tool (stack, structure, conventions) and respect existing decisions.',
-    '- Verify your work: run the code, tests, or a quick check after meaningful changes. Bar: would a strict senior reviewer approve?',
-    '- Keep chat brief and concrete — teammates read it; the client only reads the final report.',
-    '- If a material choice is contested, use the debate tool to poll the team, then decide and record it.',
+    ...(solo
+      ? [
+          'WORKING PROTOCOL',
+          '- The task board is your plan. Break the instruction into small concrete tasks (task_add), claim one (task_update → "doing"), finish it, and mark it "done" only after verifying.',
+          '- Read files before editing them. Record important choices with the decision tool and respect earlier decisions.',
+          '- Verify your work: run the code, tests, or a quick check after meaningful changes. Bar: would a strict senior reviewer approve?',
+          '- Keep chat brief and concrete — the client only reads the final report.'
+        ]
+      : [
+          'COLLABORATION PROTOCOL',
+          '- The task board is the single source of truth. Claim a task (task_update → "doing") before working on it; NEVER work on a task a teammate has "doing". Mark "done" only after verifying.',
+          '- Early in a job, break the instruction into small concrete tasks (task_add). Add newly discovered work as tasks instead of doing it silently.',
+          '- Read files before editing them. Build on teammates\' work; never rewrite it wholesale without recording a decision.',
+          '- Record important choices with the decision tool (stack, structure, conventions) and respect existing decisions.',
+          '- Verify your work: run the code, tests, or a quick check after meaningful changes. Bar: would a strict senior reviewer approve?',
+          '- Keep chat brief and concrete — teammates read it; the client only reads the final report.',
+          '- If a material choice is contested, use the debate tool to poll the team, then decide and record it.'
+        ]),
     '',
     'TOOLS — emit fenced blocks; they execute immediately in order, and results come back to you in this same turn:',
     '```tool',
     '{"tool":"read_file","path":"src/app.js"}',
     '```',
-    'JSON tools: read_file{path} · list_files{path?} · run{command,timeoutMs?} · mkdir{path} · move{path,to} · delete{path} · task_add{title} · task_update{id,status,note?} (todo|doing|done) · decision{text} · debate{question}',
+    `JSON tools: read_file{path} · list_files{path?} · run{command,timeoutMs?} · mkdir{path} · move{path,to} · delete{path} · task_add{title} · task_update{id,status,note?} (todo|doing|done) · decision{text}${solo ? '' : ' · debate{question}'}`,
     'Create/overwrite a whole file with a write fence (raw content — no escaping):',
     '```write src/app.js',
     "console.log('hi');",
     '```',
-    'The write fence ends at the first line containing only ``` — if the content itself needs a line like that (nested markdown fences), build the file with append/edit instead.',
+    'The write fence ends at the first line containing only ``` (a ``` mid-line or with a language tag is content) — if the file itself needs a bare ``` line, build it with append/edit instead.',
     'Append with ```append <path>```. Edit surgically with:',
     '```edit src/app.js',
     '<<<<<<< SEARCH',
@@ -281,7 +309,9 @@ function buildProjectSystemPrompt(seat, seats, { verify = false } = {}) {
   if (verify) {
     lines.push(
       '',
-      'A teammate believes the instruction is complete. Independently VERIFY it now — read the key files, run the code or checks yourself. Your STATUS: done is rejected unless this turn actually inspected the workspace (read_file, list_files, or run). Agree only if it truly holds; otherwise fix it or report what is missing with STATUS: working.'
+      solo
+        ? 'Last turn you claimed the instruction was complete. Do NOT take that on trust: verify it now as a strict reviewer would — re-read the key files, run the code, and run any automated checks the project has (package.json scripts, pytest, go test, make test…). Your STATUS: done is rejected unless this turn actually inspected the workspace (read_file, list_files, or run). If it truly holds, end with STATUS: done; otherwise fix what is missing and report STATUS: working.'
+        : 'A teammate believes the instruction is complete. Independently VERIFY it now — read the key files, run the code, and run any automated checks the project has (package.json scripts, pytest, go test, make test…). Your STATUS: done is rejected unless this turn actually inspected the workspace (read_file, list_files, or run). Agree only if it truly holds; otherwise fix it or report what is missing with STATUS: working.'
     );
   }
   lines.push('', 'The TURN line is machine-read and hidden from the client. Do not mention it.');
@@ -328,6 +358,15 @@ const PJ_SESSION_WORK_TOOLS = new Set([
 ]);
 
 /**
+ * Whether a finished tool result can count as done-gate evidence.
+ * A blocked / failed-to-start call cannot; a `run` that executed can,
+ * even when the process exited non-zero.
+ */
+function projectToolResultCounts(out) {
+  return !!(out && (out.ok || (out.tool === 'run' && out.ran)));
+}
+
+/**
  * Count a finished tool call against this turn's done-gate evidence.
  * `list_files` inspects but does not count as session work. A `run` that
  * actually executed (even with a non-zero exit) still counts; a blocked /
@@ -335,8 +374,7 @@ const PJ_SESSION_WORK_TOOLS = new Set([
  */
 function recordProjectToolEvidence(out, did) {
   const acc = did || { work: 0, inspect: 0 };
-  if (!out) return acc;
-  if ((out.ok || (out.tool === 'run' && out.ran)) && PJ_WORK_TOOLS.has(out.tool)) {
+  if (projectToolResultCounts(out) && PJ_WORK_TOOLS.has(out.tool)) {
     if (PJ_SESSION_WORK_TOOLS.has(out.tool)) acc.work++;
     if (PJ_INSPECT_TOOLS.has(out.tool)) acc.inspect++;
   }
@@ -395,11 +433,14 @@ function resolveProjectNextSeat({
   const list = Array.isArray(seats) ? seats : [];
   const n = list.length || 1;
   const cur = Number.isInteger(currentIndex) ? currentIndex : 0;
-  const wanted = String(to || '').trim();
-  const target =
-    wanted && wanted.toLowerCase() !== 'auto'
-      ? list.find((s) => s && s.name.toLowerCase() === wanted.toLowerCase())
-      : null;
+  // A one-member team hands off to itself by definition: its "done" is
+  // verified by its own next turn, run with the verify prompt.
+  if (list.length === 1) return { nextIndex: 0, target: list[0], selfHandoffIgnored: false };
+  // "@Ada", "Ada (backend)", "**Ada**" all mean Ada. One matcher serves both
+  // modes (exact, then the longest whole-word hit) so "Al" cannot claim a
+  // handoff meant for "Alice" here and still steal a nomination in Debate.
+  const wanted = String(to || '').trim().replace(/^[@*_`~\s]+|[*_`~\s]+$/g, '');
+  const target = wanted && wanted.toLowerCase() !== 'auto' ? matchSeatByName(wanted, list) : null;
   const selfHandoffIgnored = !!(
     doneStreak > 0 &&
     target &&
@@ -466,6 +507,32 @@ function pjTrimConvo(convo, budget) {
   ];
 }
 
+/**
+ * Seat names must be UNIQUE: a handoff is addressed by name (`TO: <Name>`) and
+ * resolved with `find`, so two seats answering to the same string make the
+ * later one unreachable — every handoff aimed at it lands on the earlier seat.
+ * The per-seat dedupe can still collide once names are normalized (an explicit
+ * "Ada 2" alongside a derived "Ada 2", or "A|B" and "A B" both becoming "A B"),
+ * so uniqueness is settled here, after normalization, where it is observable.
+ */
+function uniqueSeatNames(names) {
+  const seen = new Set();
+  return names.map((raw, i) => {
+    let name = raw || `Member ${i + 1}`;
+    if (!seen.has(name.toLowerCase())) {
+      seen.add(name.toLowerCase());
+      return name;
+    }
+    for (let n = 2; ; n++) {
+      const candidate = `${name} ${n}`;
+      if (!seen.has(candidate.toLowerCase())) {
+        seen.add(candidate.toLowerCase());
+        return candidate;
+      }
+    }
+  });
+}
+
 function pjToolLabel(tool, args = {}) {
   switch (tool) {
     case 'read_file': return `read ${args.path || ''}`;
@@ -490,5 +557,6 @@ export {
   buildProjectSystemPrompt, pjJournalLineForPrompt, pjToolLabel,
   PJ_WORK_TOOLS, PJ_INSPECT_TOOLS, PJ_SESSION_WORK_TOOLS, pjTrimConvo,
   recordProjectToolEvidence, evaluateProjectDoneClaim, resolveProjectNextSeat,
-  projectToolCallKey, projectToolCallPayload, noteRepeatToolCall, commandExitFacts
+  projectToolCallKey, projectToolCallPayload, noteRepeatToolCall, commandExitFacts,
+  projectToolResultCounts, uniqueSeatNames, PJ_AUTO_MAX_TURNS
 };

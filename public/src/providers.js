@@ -229,4 +229,14 @@ function providerAccessIssue(p, label) {
 function setActiveProviderId(v) { activeProviderId = v; return v; }
 function setProviders(v) { providers = v; return v; }
 
-export { ACTIVE_PROVIDER_KEY, KNOWN_LOCAL_AGENTS, PROVIDERS_KEY, activeProviderId, declaredContextFor, formatDeclaredModels, getActiveProvider, isKnownLocalAgent, isLocalProvider, loadProviders, localAgentFromBaseURL, localAgentId, localProfileReady, localProviderNeedsKey, newProviderId, normalizeDeclaredModels, parseDeclaredModels, providerAccessIssue, providerHostname, providers, saveProviders, setActiveProviderId, setProviders };
+/**
+ * False until /api/agents/local has answered once (success or failure). Lives
+ * here, not in localAgents.js: that module registers a callback with
+ * ui/providers.js at module scope, so importing it from net/stream.js closed
+ * an import cycle in which its body ran before ui/providers.js had
+ * initialised its `let` — a ReferenceError at page load, blank app.
+ */
+let localAgentsSynced = false;
+function setLocalAgentsSynced(v) { localAgentsSynced = !!v; return localAgentsSynced; }
+
+export { ACTIVE_PROVIDER_KEY, localAgentsSynced, setLocalAgentsSynced, KNOWN_LOCAL_AGENTS, PROVIDERS_KEY, activeProviderId, declaredContextFor, formatDeclaredModels, getActiveProvider, isKnownLocalAgent, isLocalProvider, loadProviders, localAgentFromBaseURL, localAgentId, localProfileReady, localProviderNeedsKey, newProviderId, normalizeDeclaredModels, parseDeclaredModels, providerAccessIssue, providerHostname, providers, saveProviders, setActiveProviderId, setProviders };

@@ -50,9 +50,11 @@ function debateCostHintText() {
   const r = auto ? DEBATE_AUTO_MAX_ROUNDS : debateSettings.maxRounds;
   const finalLabel =
     debateSettings.finalAnswerMode === 'judge' ? '1 judge' : '1 presenter';
-  const schedule = auto
-    ? `Auto — the team stops when they agree the problem is solved (safety cap ${DEBATE_AUTO_MAX_ROUNDS} rounds). `
-    : '';
+  const schedule =
+    (auto ? `Auto — the team stops when they agree the problem is solved (safety cap ${DEBATE_AUTO_MAX_ROUNDS} rounds). ` : '') +
+    (debateSettings.consensusMode === 'majority'
+      ? 'Majority rule — the discussion ends once more than half the experts agree; the final answer must address the dissent. '
+      : '');
   return `${schedule}One debate ≈ (${e} experts × ${r} rounds) + ${finalLabel} = up to ${e * r + 1} API calls (excluding automatic retries). Round 1 is blind and runs in parallel. Each expert runs its own model & provider. By default every expert AND the final answer run at your global reasoning effort — switch Expert Reasoning to Off to trade quality for speed.`;
 }
 
@@ -253,6 +255,8 @@ function renderDebateSeats() {
   syncDebateRoundModeUi();
   const reasoning = $('#debateReasoning');
   if (reasoning) reasoning.value = debateSettings.expertReasoning;
+  const agreement = $('#debateConsensusMode');
+  if (agreement) agreement.value = debateSettings.consensusMode === 'majority' ? 'majority' : 'all';
   const finalMode = $('#debateFinalMode');
   if (finalMode) finalMode.value = debateSettings.finalAnswerMode === 'judge' ? 'judge' : 'nominated';
   updateDebateCostHint();

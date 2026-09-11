@@ -1,9 +1,9 @@
 import { getConfig } from '../config.js';
 import { localAgentId } from '../providers.js';
 import { pushRecentModel, warmProviderCatalogs } from '../models.js';
-import { isTransientProviderError, sleep, streamCompletion } from '../net/stream.js';
-import { pjEmit, pjToolCardDom, pjToolLabel, pjTurnShellDom } from '../project/journal.js';
-import { buildProjectSystemPrompt, evaluateProjectDoneClaim, noteRepeatToolCall, parseAgentResponse, pjDisplayable, pjElide, pjJournalLineForPrompt, pjTrimConvo, projectToolCallKey, projectToolCallPayload, recordProjectToolEvidence, resolveProjectNextSeat } from '../project/protocol.js';
+import { isTransientProviderError, sleep, streamCompletion, streamResultError } from '../net/stream.js';
+import { pjEmit, pjFillToolCard, pjToolCardDom, pjTurnShellDom } from '../project/journal.js';
+import { PJ_AUTO_MAX_TURNS, buildProjectSystemPrompt, evaluateProjectDoneClaim, noteRepeatToolCall, parseAgentResponse, pjDisplayable, pjElide, pjJournalLineForPrompt, pjToolLabel, pjTrimConvo, projectToolCallKey, projectToolCallPayload, projectToolResultCounts, recordProjectToolEvidence, resolveProjectNextSeat } from '../project/protocol.js';
 import { activeProject, pjApi, pjPersistJournal, projectDecisions, projectJournal, projectRun, projectSeats, projectTasks, renderProjectTasksList, setProjectBusy, setProjectRun, updateModeStrip } from '../project/state.js';
 import { executeAgentBlock } from '../project/tools.js';
 import { abortController, messagesEl, setAbortController, statusText, userInput } from '../state.js';
@@ -13,7 +13,12 @@ import { createStreamRenderer } from '../ui/renderer.js';
 import { READY_STATUS, createReasoningPanel, destroyReasoningPanel, finalizeReasoningPanel, markStreamUnread, scrollToBottom, setStreamingUi, stickToBottom, sweepReasoningTimers, updateReasoningStream } from '../ui/transcript.js';
 import { contextLimitFor } from '../context.js';
 
-async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal) {
+async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal, budget = Infinity) {
+  // pjTrimConvo can drop tool exchanges but never shrink this brief, so the
+  // brief alone must fit: a 200-line tree plus 30 activity lines at up to 600
+  // chars and an unbounded instruction reached 20k+ chars, which on a small
+  // window IS the hard 400 the trim exists to prevent — on every turn.
+  const share = (frac, floor) => (Number.isFinite(budget) ? Math.max(floor, Math.floor(budget * frac)) : Infinity);
   let treeText = '(could not list files)';
   try {
     const data = await pjApi('/api/project/fs', { id: activeProject.id, op: 'list', path: '' }, signal);
@@ -22,6 +27,7 @@ async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal
       ? entries.map((en) => (en.dir ? `${en.path}${en.skipped ? ' (skipped)' : ''}` : `${en.path} (${en.size}b)`)).join('\n') +
         (data.result.truncated || entries.length < (data.result.entries || []).length ? '\n…(truncated)' : '')
       : '(empty folder)';
+    treeText = pjElide(treeText, share(0.2, 1500));
   } catch { /* keep placeholder */ }
 
   const tasksText = projectTasks.length
@@ -35,18 +41,31 @@ async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal
     ? projectDecisions.slice(-12).map((d) => `- ${d.text} (${d.by})`).join('\n')
     : '(none yet)';
 
-  const activity = projectJournal
-    .slice(-30)
-    .map(pjJournalLineForPrompt)
-    .filter(Boolean)
-    .join('\n') || '(none yet)';
+  const activity = pjElide(
+    projectJournal
+      .slice(-30)
+      .map(pjJournalLineForPrompt)
+      .filter(Boolean)
+      .join('\n') || '(none yet)',
+    share(0.25, 2000)
+  );
+
+  // "continue", "yes, use node", "now add tests" only mean something next to
+  // what came before — and the 30-line activity window had already scrolled
+  // the original instruction out by the time a follow-up's report was written.
+  const earlier = projectJournal
+    .filter((e) => e && e.type === 'user' && typeof e.text === 'string')
+    .slice(0, -1)
+    .slice(-3)
+    .map((e) => `- ${pjElide(e.text.replace(/\s+/g, ' '), 400)}`);
 
   return [
     `PROJECT: ${activeProject.name}`,
     '',
     'CURRENT INSTRUCTION from the client:',
-    instruction,
+    pjElide(instruction, share(0.3, 4000)),
     '',
+    ...(earlier.length ? ['EARLIER INSTRUCTIONS this session builds on (oldest first):', ...earlier, ''] : []),
     'WORKSPACE FILES:',
     treeText,
     '',
@@ -59,7 +78,9 @@ async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal
     'RECENT TEAM ACTIVITY (oldest → newest):',
     activity,
     '',
-    `Turn ${turn} of ${maxTurns} this session. You are ${seat.name}. Work now.`
+    activeProject.settings?.runMode === 'auto'
+      ? `Turn ${turn} this session — no fixed limit: keep working until the instruction is complete and verified (safety cap ${maxTurns}). You are ${seat.name}. Work now.`
+      : `Turn ${turn} of ${maxTurns} this session. You are ${seat.name}. Work now.`
   ].join('\n');
 }
 
@@ -79,20 +100,13 @@ function pjTurnBudget(seat, cfg) {
   return Math.max(8000, (limit - reserveTokens) * 3); // ~3 chars/token, deliberately conservative
 }
 
-/**
- * Keep the inner turn conversation under budget by dropping the OLDEST
- * tool exchanges. The turn context (message 0) and the most recent exchanges
- * are what the model actually needs; a note marks what was dropped so it can
- * re-read anything it still wants.
- */
-
 async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opts) {
   const cfg = getConfig();
   const sys = buildProjectSystemPrompt(seat, seats, { verify: opts.verify });
-  const ctx = await buildProjectTurnContext(seat, instruction, turn, maxTurns, opts.signal);
+  const turnBudget = pjTurnBudget(seat, cfg);
+  const ctx = await buildProjectTurnContext(seat, instruction, turn, maxTurns, opts.signal, turnBudget);
   if (opts.stale()) return { aborted: true };
   const convo = [{ role: 'user', content: ctx }];
-  const turnBudget = pjTurnBudget(seat, cfg);
   // What this turn actually accomplished — the session uses it to decide
   // whether a "done" claim has anything behind it.
   const did = { work: 0, inspect: 0 };
@@ -102,11 +116,16 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
     statusText.textContent = `${seat.name} · turn ${turn}/${maxTurns}${step > 1 ? ` · step ${step}` : ''}…`;
     statusText.classList.add('thinking-status');
 
-    // Live streaming turn shell
-    const shell = pjTurnShellDom(seat.name, seat.i);
+    // Live streaming turn shell — one per TURN, not per inner step: a
+    // three-step turn used to stack three headers with the same seat name.
+    const prev = messagesEl.lastElementChild;
+    const reuse =
+      step > 1 && prev && prev.classList.contains('pj-turn') && !prev.classList.contains('pj-report') &&
+      prev.dataset.seat === String(seat.i);
+    const shell = reuse ? prev : pjTurnShellDom(seat.name, seat.i, turn);
     const welcome = messagesEl.querySelector('.welcome');
     if (welcome) welcome.remove();
-    messagesEl.appendChild(shell);
+    if (!reuse) messagesEl.appendChild(shell);
     const body = shell.querySelector('.pj-turn-body');
     const bubble = document.createElement('div');
     bubble.className = 'bubble pj-bubble streaming';
@@ -118,10 +137,11 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
     let rText = '';
     let result = null;
     let lastErr = null;
-    /** Drop this turn's UI, stopping the thought panel's timer with it */
+    /** Drop this step's UI, stopping the thought panel's timer with it */
     const dropTurnShell = () => {
       rApi = destroyReasoningPanel(rApi);
-      shell.remove();
+      if (reuse) bubble.remove();
+      else shell.remove();
     };
     for (let attempt = 1; attempt <= 2 && !result; attempt++) {
       try {
@@ -164,7 +184,7 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
           dropTurnShell();
           return { aborted: true };
         }
-        if (r.error) throw new Error(r.error);
+        if (r.error) throw streamResultError(r);
         result = r;
       } catch (err) {
         if (err.name === 'AbortError') {
@@ -176,7 +196,7 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
           return { aborted: true };
         }
         lastErr = err;
-        if (attempt >= 2 || !isTransientProviderError(err.message || '')) {
+        if (attempt >= 2 || !isTransientProviderError(err)) {
           dropTurnShell();
           return { ok: false, err: lastErr };
         }
@@ -194,13 +214,13 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
     if (parsed.prose) {
       renderer.finish(parsed.prose);
       bubble.classList.remove('streaming');
-      pjEmit({ type: 'say', name: seat.name, seat: seat.i, text: parsed.prose }, { persist: true });
+      pjEmit({ type: 'say', name: seat.name, seat: seat.i, turn, text: parsed.prose }, { persist: true });
       // The live shell already shows it; remove the duplicate emitted node
       const dupe = messagesEl.lastElementChild;
       if (dupe && dupe !== shell && dupe.classList.contains('pj-turn')) dupe.remove();
     } else {
       bubble.remove();
-      if (!rText && !parsed.blocks.length) shell.remove();
+      if (!rText && !parsed.blocks.length && !reuse) shell.remove();
     }
 
     if (!parsed.blocks.length) {
@@ -223,20 +243,30 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
     for (let bi = 0; bi < parsed.blocks.length; bi++) {
       if (opts.stale() || opts.signal.aborted) return { aborted: true };
       const block = parsed.blocks[bi];
+      // Show the call while it runs; the result repaints the same card.
+      const pendingTool = block.kind === 'tool' ? String(block.spec?.tool || 'tool') : block.kind;
+      const pendingArgs = block.kind === 'tool' ? block.spec || {} : { path: block.path };
+      const card = pjToolCardDom({ pending: true, tool: pendingTool, args: pendingArgs });
+      (shell.isConnected ? shell.querySelector('.pj-turn-body') : (() => { messagesEl.appendChild(shell); return shell.querySelector('.pj-turn-body'); })()).appendChild(card);
+      statusText.textContent = `${seat.name} · ${pjToolLabel(pendingTool, pendingArgs).slice(0, 60)}…`;
+      scrollToBottom();
       const out = await executeAgentBlock(block, seat, opts);
       // Stop landed mid-tool — drop the half-finished card rather than
       // journalling a failure the user caused on purpose.
-      if (opts.stale() || out.aborted || opts.signal.aborted) return { aborted: true };
+      if (opts.stale() || out.aborted || opts.signal.aborted) {
+        card.remove();
+        return { aborted: true };
+      }
       const ev = {
         t: Date.now(),
-        type: 'tool', name: seat.name, seat: seat.i,
+        type: 'tool', name: seat.name, seat: seat.i, turn,
         tool: out.tool, args: out.args, ok: out.ok, ms: out.ms,
         detail: out.detail.slice(0, 4000)
       };
       projectJournal.push(ev);
       pjPersistJournal([ev]);
-      const card = pjToolCardDom(ev);
-      (shell.isConnected ? shell.querySelector('.pj-turn-body') : (() => { messagesEl.appendChild(shell); return shell.querySelector('.pj-turn-body'); })()).appendChild(card);
+      pjFillToolCard(card, ev);
+      renderProjectInspector();
       scrollToBottom();
       // A command that RAN and exited non-zero is still evidence of work —
       // a verifier's `grep` finding no matches exits 1 (the good outcome) and
@@ -245,8 +275,13 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
       // Listing counts as looking, but not as having built anything — see
       // recordProjectToolEvidence / PJ_SESSION_WORK_TOOLS.
       const callKey = projectToolCallKey(out.tool, projectToolCallPayload(block));
-      const repeat = noteRepeatToolCall(seenToolCalls, callKey, out.detail);
-      if (!repeat.repeat) recordProjectToolEvidence(out, did);
+      // Failures must not occupy the repeat slot — a later success of the
+      // same call is still inspection/work. Only counting results are noted.
+      let repeat = { repeat: false, prior: null };
+      if (projectToolResultCounts(out)) {
+        repeat = noteRepeatToolCall(seenToolCalls, callKey, out.detail);
+        if (!repeat.repeat) recordProjectToolEvidence(out, did);
+      }
       const resultBody = pjElide(out.convo, resultCap);
       convoResults.push(
         repeat.repeat
@@ -257,17 +292,24 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
       );
     }
 
+    // A "done" claimed in the same message as the tools was made BEFORE the
+    // results existed — a failing `npm test` in that batch would otherwise be
+    // counted as inspection evidence for the claim. Hand the results back and
+    // make the seat end its turn again, now that it has seen them.
+    const blindDone = parsed.handoff?.status === 'done';
     convo.push({ role: 'assistant', content: result.content });
     convo.push({
       role: 'user',
       content:
         `TOOL RESULTS:\n\n${convoResults.join('\n\n')}\n\n` +
-        (parsed.handoff
-          ? 'You already ended your turn — results are recorded for the team.'
-          : `Continue your turn (${PJ_INNER_STEPS - step} steps left), or end it with the [TURN: …] line.`)
+        (blindDone
+          ? 'You claimed done before seeing these results — review them, then end your turn with the [TURN: …] line (STATUS: done only if they confirm it).'
+          : parsed.handoff
+            ? 'You already ended your turn — results are recorded for the team.'
+            : `Continue your turn (${PJ_INNER_STEPS - step} steps left), or end it with the [TURN: …] line.`)
     });
 
-    if (parsed.handoff) {
+    if (parsed.handoff && !blindDone) {
       return { ok: true, status: parsed.handoff.status, to: parsed.handoff.to, note: parsed.handoff.note, did };
     }
   }
@@ -291,6 +333,7 @@ async function runProjectReport(seat, instruction, opts) {
   shell.querySelector('.pj-turn-body').appendChild(bubble);
   const renderer = createStreamRenderer(bubble, { announce: true, sweep: true });
   scrollToBottom();
+  let partial = '';
   try {
     const r = await streamCompletion({
       baseURL: seat.provider.baseURL,
@@ -308,6 +351,7 @@ async function runProjectReport(seat, instruction, opts) {
       shouldCancel: opts.stale,
       onToken: (chunk, full) => {
         if (opts.stale()) return;
+        partial = full;
         renderer.update(full);
         scrollToBottom();
       }
@@ -319,9 +363,20 @@ async function runProjectReport(seat, instruction, opts) {
     projectJournal.push({ t: Date.now(), type: 'report', name: seat.name, seat: seat.i, text });
     pjPersistJournal([projectJournal[projectJournal.length - 1]]);
   } catch (e) {
-    if (e.name !== 'AbortError' && !opts.stale()) {
-      renderer.finishPlain(`(report failed: ${e.message})`);
+    if (opts.stale()) return;
+    if (e.name === 'AbortError') {
+      // Stop mid-report: close the caret over what arrived, or drop the shell
+      // so an empty bubble is not left blinking.
+      if (partial.trim()) {
+        renderer.finish(`${partial.trim()}\n\n*[stopped]*`);
+        bubble.classList.remove('streaming');
+      } else {
+        shell.remove();
+      }
+      return;
     }
+    renderer.finishPlain(`(report failed: ${e.message})`);
+    bubble.classList.remove('streaming');
   }
 }
 
@@ -345,13 +400,21 @@ async function runProjectSession(instruction) {
   // against the seat's context window, and the provider knows that number
   // exactly while the local table only guesses. Cached per provider per hour.
   warmProviderCatalogs(seats.map((s) => s.provider?.id)).catch(() => {});
-  const maxTurns = Math.min(80, Math.max(4, Number(activeProject.settings?.maxTurns) || 24));
+  // Auto: the session runs until "done" is claimed AND verified; the cap only
+  // stops a runaway. Fixed: the user's N, then "say continue".
+  const autoRun = activeProject.settings?.runMode === 'auto';
+  const maxTurns = autoRun ? PJ_AUTO_MAX_TURNS : Math.min(80, Math.max(4, Number(activeProject.settings?.maxTurns) || 24));
   let cur = Number.isInteger(activeProject.lastSeat) ? (activeProject.lastSeat + 1) % seats.length : 0;
   let doneStreak = 0;
   /** Successful workspace operations this session — the evidence behind "done" */
   let sessionWork = 0;
   let stopped = false;
   let finished = false;
+  /** Seats whose last turn failed in a row — the session ends only when all have */
+  let failedInARow = 0;
+  /** Turns in a row that touched nothing: A→B→A "working" hand-offs burn the budget */
+  let idleInARow = 0;
+  const STALL_TURNS = 4;
 
   pjEmit({ type: 'session', phase: 'start' });
 
@@ -369,7 +432,29 @@ async function runProjectSession(instruction) {
       renderProjectInspector();
       if (out.aborted) { stopped = true; break; }
       if (!out.ok) {
-        pjEmit({ type: 'sys', kind: 'error', text: `${seat.name}'s turn failed: ${out.err?.message || 'provider error'} — session ended.` });
+        // One bad endpoint should not end a team session — the same rule
+        // Debate applies. The next seat takes the turn; only when every seat
+        // has failed back to back is there nobody left to continue.
+        failedInARow++;
+        const msg = out.err?.message || 'provider error';
+        if (failedInARow < seats.length && isTransientProviderError(out.err || msg)) {
+          pjEmit({ type: 'sys', kind: 'error', text: `${seat.name}'s turn failed: ${msg} — a teammate takes over.` });
+          cur = (cur + 1) % seats.length;
+          continue;
+        }
+        pjEmit({ type: 'sys', kind: 'error', text: `${seat.name}'s turn failed: ${msg}` });
+        pjEmit({ type: 'session', phase: 'end', reason: `provider error — ${seat.name}` });
+        finished = true;
+        break;
+      }
+      failedInARow = 0;
+      // `work` counts read/write/run — not `list_files`, which is how a
+      // wandering team spends 24 turns "looking around" without ever tripping
+      // this (verified: every turn listed the tree once and counted as busy).
+      idleInARow = out.did && out.did.work ? 0 : idleInARow + 1;
+      if (idleInARow >= STALL_TURNS && out.status !== 'blocked' && out.status !== 'done') {
+        pjEmit({ type: 'session', phase: 'end', reason: `stalled — ${STALL_TURNS} turns in a row touched nothing; give the team a more concrete instruction` });
+        finished = true;
         break;
       }
       activeProject.lastSeat = seat.i;
@@ -406,10 +491,11 @@ async function runProjectSession(instruction) {
         finished = true;
         break;
       }
-      if (doneStreak >= Math.min(seats.length, 2)) {
-        // Two independent confirmations end the session (the claimer plus one
-        // verifier), which on a 2-member team IS the whole team. Larger teams
-        // deliberately do not need every seat to re-verify the same work.
+      if (doneStreak >= 2) {
+        // Two confirmations end the session: the claim plus one verifying
+        // turn. On a team the verifier is always someone else; a one-member
+        // team verifies in its own next turn under the verify prompt. Larger
+        // teams deliberately do not need every seat to re-verify the same work.
         await runProjectReport(seat, instruction, opts);
         if (stale()) return;
         if (opts.signal.aborted) {
@@ -444,7 +530,13 @@ async function runProjectSession(instruction) {
     }
 
     if (!finished && !stopped && !stale()) {
-      pjEmit({ type: 'session', phase: 'end', reason: `turn limit (${maxTurns}) reached — say "continue" to keep going` });
+      pjEmit({
+        type: 'session',
+        phase: 'end',
+        reason: autoRun
+          ? `safety cap (${maxTurns} turns) reached without a verified "done" — say "continue" to keep going`
+          : `turn limit (${maxTurns}) reached — say "continue" to keep going`
+      });
     }
     if (stopped && !stale()) {
       pjEmit({ type: 'session', phase: 'end', reason: 'stopped' });

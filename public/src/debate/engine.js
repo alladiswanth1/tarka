@@ -1,13 +1,15 @@
 import { contextLimitFor, getContextUsage, updateContextUI } from '../context.js';
 import { buildDebateCredit, createDebateArena } from '../debate/arena.js';
-import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, applyDebateVote, buildDebateTurnMessage, debateAnswerAttribution, debateHasConsensus, debateLiveSeats, debateRoundBudget, discardOpeningVotes, dropDebateSeat, expertSystemPrompt, formatDebateTranscript, joinNames, judgeSystemPrompt, parseDebateStatus, pickDebatePresenter, presenterSystemPrompt, stripStreamingStatusTail } from '../debate/protocol.js';
+import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, applyDebateVote, buildDebateTurnMessage, debateAnswerAttribution, debateHasConsensus, debateLiveSeats, debateRoundBudget, discardOpeningVotes, dropDebateSeat, expertSystemPrompt, formatDebateTranscript, joinNames, judgeSystemPrompt, parseDebateStatus, pickDebatePresenter, presenterSystemPrompt, stripStreamingStatusTail, normalizeDebateConsensusMode, debateDissenters } from '../debate/protocol.js';
 import { debateSettings } from '../debate/settings.js';
 import { validateDebateSetup } from '../debate/ui.js';
 import { pushHistoryMessage, scheduleHistorySave } from '../history.js';
+import { activeSessionId, persistSessionSnapshot } from '../sessions.js';
 import { pushRecentModel, warmProviderCatalogs } from '../models.js';
-import { sleep, streamCompletion } from '../net/stream.js';
+import { isTransientProviderError, sleep, streamCompletion, streamResultError } from '../net/stream.js';
 import { localAgentId, providers } from '../providers.js';
 import { abortController, chatSession, messages, setAbortController, statusText, tokenInfo, userInput } from '../state.js';
+import { uniqueSeatNames } from '../project/protocol.js';
 import { estimateTokens, formatTokenCount } from '../tokens.js';
 import { dockArenaIntoMessage, mountArena } from '../ui/inspector.js';
 import { flashMarkAgreed } from '../ui/mark.js';
@@ -28,23 +30,20 @@ function buildDebatePriorContext() {
 }
 
 /**
- * Format the debate transcript, dropping OLDEST turns first when it exceeds
- * charBudget (the newest turn is always kept). Returns { text, omitted }.
- */
-
-/**
  * Char budget for a seat's transcript block, from the seat model's context
  * limit (provider-detected when cached, else the known-model table).
- * ~3 chars/token is deliberately conservative; generous reserve covers the
- * system prompt, task, prior-chat block, and the completion itself.
+ * ~3 chars/token is deliberately conservative. The reserve counts what else
+ * shares the window — the prior-chat block (up to 8000 chars), the task and
+ * the system prompt — not just the completion: with a flat allowance an 8k
+ * seat was handed a transcript that alone overran it, drew the hard 400, and
+ * was dropped.
  */
-function seatTranscriptBudget(seat, cfg) {
+function seatTranscriptBudget(seat, cfg, { prior = '', task = '' } = {}) {
   const { limit } = contextLimitFor(seat.provider?.id || '', seat.model);
-  const reserveTokens = (cfg.maxTokens || 1600) + 2400;
+  const reserveTokens = (cfg.maxTokens || 1600) + estimateTokens(prior) + estimateTokens(task) + 800;
   return Math.max(3000, (limit - reserveTokens) * 3);
 }
 
-// ========== DEBATE MODE — engine ==========
 /**
  * Orchestrates a full debate: round-robin expert turns → peer consensus →
  * presentation turn streamed into a normal assistant bubble. isStreaming is
@@ -54,13 +53,22 @@ function seatTranscriptBudget(seat, cfg) {
 async function runDebate(cfg, task) {
   const mySession = chatSession;
   const isStale = () => mySession !== chatSession;
+  // The chat this debate belongs to, captured now: a session switch swaps
+  // `messages` and `activeSessionId` under this function (same as Solo).
+  const mySessionId = activeSessionId;
+  const myMessages = messages;
   const ds = debateSettings;
 
   // Seat model/provider are explicit user choices, validated by
   // validateDebateSetup() before this runs — no silent fallbacks here.
+  // Two seats named "Expert 3" (remove one, add one) made transcript blocks
+  // ambiguous and sent every nomination to the earlier seat.
+  const seatNames = uniqueSeatNames(
+    ds.experts.slice(0, DEBATE_MAX_SEATS).map((e, i) => (e.name || `Expert ${i + 1}`).trim() || `Expert ${i + 1}`)
+  );
   const seats = ds.experts.slice(0, DEBATE_MAX_SEATS).map((e, i) => ({
     i,
-    name: (e.name || `Expert ${i + 1}`).trim() || `Expert ${i + 1}`,
+    name: seatNames[i],
     persona: (e.persona || '').trim() || DEBATE_DEFAULT_PERSONA,
     model: (e.model || '').trim(),
     provider: providers.length === 1 ? providers[0] : providers.find((p) => p.id === e.providerId),
@@ -155,7 +163,8 @@ async function runDebate(cfg, task) {
    * informed: in the blind opening round nobody has read anyone else, so an
    * AGREE is an opinion about one's own answer, not about the team's.
    */
-  const hasConsensus = () => debateHasConsensus(seats);
+  const consensusMode = normalizeDebateConsensusMode(ds.consensusMode);
+  const hasConsensus = () => debateHasConsensus(seats, consensusMode);
   /**
    * Retire a seat whose provider failed twice. The debate continues as long as
    * two experts remain — a team of models exists precisely so one bad endpoint
@@ -175,7 +184,7 @@ async function runDebate(cfg, task) {
 
   /** Transcript block sized to this seat's model context; warns once on trim */
   const transcriptForSeat = (seat) => {
-    const { text, omitted } = formatDebateTranscript(transcript, seatTranscriptBudget(seat, cfg));
+    const { text, omitted } = formatDebateTranscript(transcript, seatTranscriptBudget(seat, cfg, { prior, task }));
     if (omitted > 0 && !contextTrimWarned) {
       contextTrimWarned = true;
       arena.addNote(
@@ -217,7 +226,7 @@ async function runDebate(cfg, task) {
     // Address only the experts still in the room — a dropped seat is not
     // a colleague whose silence needs explaining.
     const roster = liveSeats().length >= 2 ? liveSeats() : seats;
-    const sys = expertSystemPrompt(seat, roster, { blind, finalRound, auto: autoRounds });
+    const sys = expertSystemPrompt(seat, roster, { blind, finalRound, auto: autoRounds, consensusMode });
     const userMsg = buildDebateTurnMessage({
       task,
       prior,
@@ -265,11 +274,14 @@ async function runDebate(cfg, task) {
           }
         );
         if (isStale() || r.cancelled) return abandon();
-        if (r.error) throw new Error(r.error);
+        if (r.error) throw streamResultError(r);
         result = r;
       } catch (err) {
         if (err.name === 'AbortError' || isStale()) return abandon();
         turnErr = err;
+        // A 400/401/404 (bad model id, context overflow) will not pass on the
+        // second try — only rate limits, 5xx and network blips get one.
+        if (!isTransientProviderError(err)) break;
       }
     }
     if (!result) {
@@ -420,9 +432,12 @@ async function runDebate(cfg, task) {
 
     if (!stopped && transcript.length > 0) {
       const live = liveSeats();
+      const dissent = consensus ? debateDissenters(seats) : [];
       arena.addNote(
         consensus
-          ? `✓ Full consensus — ${joinNames(live.map((s) => s.name))} agree. Moving to the final answer.`
+          ? dissent.length
+            ? `✓ Majority consensus — ${joinNames(live.filter((s) => s.status === 'agree').map((s) => s.name))} agree; ${joinNames(dissent.map((s) => s.name))} dissent${dissent.length === 1 ? 's' : ''}. Moving to the final answer.`
+            : `✓ Full consensus — ${joinNames(live.map((s) => s.name))} agree. Moving to the final answer.`
           : live.length < 2
             ? 'The final answer will be written from the takes that did arrive.'
             : autoRounds
@@ -500,7 +515,8 @@ async function runDebate(cfg, task) {
       setCredit(presenter.name, creditOpts);
       const presSys = presenterSystemPrompt(presenter, finalRoster, {
         consensus,
-        interrupted: writeUpAfterStop
+        interrupted: writeUpAfterStop,
+        dissenters: consensus ? debateDissenters(seats).map((s) => s.name) : []
       });
       const presMsg = buildDebateTurnMessage({
         task,
@@ -591,6 +607,36 @@ async function runDebate(cfg, task) {
     let presErr = null;
     /** True once a failed judge has handed the final answer to the team's nominee */
     let fellBackFromJudge = false;
+    // `stopped` may already be true here (Auto + Esc mid-discussion writes up
+    // anyway). What the branches below need is whether the WRITE-UP itself was
+    // stopped — keyed on that flag, a judge that 500'd twice after Esc skipped
+    // the nominee fallback and the failure was shown as a silent "Stopped".
+    let writeUpStopped = false;
+    /**
+     * A session switch mid-write-up aborts this run. The partial answer still
+     * belongs to the chat it was written for — pushing it into whichever chat
+     * is live now (the old fall-through) put the answer in the wrong chat.
+     */
+    const keepForOldSession = () => {
+      if (!finalContent || !mySessionId) return;
+      const last = myMessages[myMessages.length - 1];
+      if (!last || last.role !== 'user') return;
+      myMessages.push({
+        role: 'assistant',
+        content: `${finalContent}\n\n*[stopped]*`,
+        debate: {
+          experts: creditNames,
+          roster: seats.map((s) => ({ name: s.name, i: s.i, dropped: !!s.dropped })),
+          rounds: roundsRun,
+          presenter: finalLabel,
+          consensus: false,
+          stopped: true,
+          turns: transcript.map((t) => ({ name: t.name, text: t.text, round: t.round, i: t.seatIdx })),
+          finalAnswerMode: 'nominated'
+        }
+      });
+      persistSessionSnapshot(mySessionId, myMessages);
+    };
     for (let attempt = 1; attempt <= 2 && !presResult; attempt++) {
       try {
         if (attempt > 1) {
@@ -604,6 +650,7 @@ async function runDebate(cfg, task) {
           // through to the normal stopped handling instead.
           if (signal.aborted) {
             stopped = true;
+            writeUpStopped = true;
             break;
           }
           // Clean slate: drop any partial text/reasoning from the failed try
@@ -618,14 +665,18 @@ async function runDebate(cfg, task) {
           scrollToBottom();
         }, onFinalReasoning);
         if (isStale() || r.cancelled) return;
-        if (r.error) throw new Error(r.error);
+        if (r.error) throw streamResultError(r);
         presResult = r;
       } catch (err) {
+        if (isStale()) {
+          if (err.name === 'AbortError') keepForOldSession();
+          return;
+        }
         if (err.name === 'AbortError') {
           stopped = true;
+          writeUpStopped = true;
           break;
         }
-        if (isStale()) return;
         presErr = err;
       }
       // The judge has now spent both its attempts. Rather than discard a
@@ -634,7 +685,7 @@ async function runDebate(cfg, task) {
       // judge is misconfigured — and give that writer its own two attempts.
       if (
         !presResult &&
-        !stopped &&
+        !writeUpStopped &&
         judgeUsed &&
         !fellBackFromJudge &&
         attempt >= 2 &&
@@ -664,7 +715,7 @@ async function runDebate(cfg, task) {
       presResult = null;
     }
 
-    settleFinalReasoning(stopped);
+    settleFinalReasoning(writeUpStopped);
     bubble.classList.remove('streaming', 'hidden-until-content');
 
     if (presResult) {
@@ -678,12 +729,12 @@ async function runDebate(cfg, task) {
       } else if (presenter?.model) {
         pushRecentModel(presenter.model, presenter.provider?.id);
       }
-    } else if (stopped && finalContent) {
+    } else if (writeUpStopped && finalContent) {
       // Aborted mid-presentation with partial text — keep it, but do not
       // treat it as a finished consensus answer (reload / next debate
       // would otherwise inherit a truncated deliverable).
       renderer.finish(finalContent + '\n\n*[stopped]*');
-    } else if (stopped) {
+    } else if (writeUpStopped) {
       arena.finalize({ rounds: roundsRun, presenter: finalLabel, consensus, stopped: true });
       bubble.remove();
       markOrphanMessage(msgEl);
@@ -707,12 +758,7 @@ async function runDebate(cfg, task) {
     // ---- Success: only the final answer enters history ----
     // *[stopped]* only if the WRITE-UP itself was cut off. An Auto interrupt
     // that then finished the presenter is a real answer, just early.
-    const stored =
-      presResult || !stopped
-        ? finalContent
-        : finalContent
-          ? `${finalContent}\n\n*[stopped]*`
-          : finalContent;
+    const stored = presResult || !writeUpStopped ? finalContent : `${finalContent}\n\n*[stopped]*`;
     const m = pushHistoryMessage('assistant', stored);
     // The final writer's chain of thought is restored from history exactly like
     // a solo reply's (sessions.js rebuilds the panel when `reasoning` is set) —

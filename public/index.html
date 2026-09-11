@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; form-action 'none'; base-uri 'none'" />
   <meta name="color-scheme" content="dark" />
   <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2314171f'/><g transform='translate(16 16) scale(.92) translate(-16 -16)'><circle cx='16' cy='16' r='10.6' fill='none' stroke='%23818cf8' stroke-width='1.6' stroke-opacity='.5'/><circle cx='16' cy='5.4' r='2.5' fill='%23818cf8' fill-opacity='1'/><circle cx='25.18' cy='21.3' r='2.5' fill='%23818cf8' fill-opacity='.38'/><circle cx='6.82' cy='21.3' r='2.5' fill='%23818cf8' fill-opacity='.38'/><path d='M16 12.2 19.8 16 16 19.8 12.2 16Z' fill='%23818cf8'/></g></svg>" />
   <title>Tarka · Reasoning Ready</title>
@@ -65,7 +65,7 @@
     </nav>
 
     <!-- Sidebar / Config Panel — Card Deck layout -->
-    <aside id="sidebar" class="collapsed">
+    <aside id="sidebar" class="collapsed" inert>
       <div class="sidebar-header">
         <div class="logo">
           <span class="logo-icon"><svg class="tk-mark is-intro" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><circle class="tk-ring" cx="16" cy="16" r="10.6" transform="rotate(-90 16 16)"/><circle class="tk-seat tk-seat-1 is-lead" cx="16" cy="5.4" r="2.5"/><circle class="tk-seat tk-seat-2" cx="25.18" cy="21.3" r="2.5"/><circle class="tk-seat tk-seat-3" cx="6.82" cy="21.3" r="2.5"/><path class="tk-core" d="M16 12.2 19.8 16 16 19.8 12.2 16Z"/></svg></span>
@@ -119,10 +119,10 @@
                 <p id="provLocalNote" class="hint" hidden></p>
                 <label>
                   API Key
-                  <div class="input-with-toggle">
+                  <span class="input-with-toggle">
                     <input type="password" id="provApiKey" placeholder="sk-... or your key" />
                     <button type="button" id="provToggleKey" class="icon-btn small" title="Show/Hide" aria-label="Toggle API key visibility">👁</button>
-                  </div>
+                  </span>
                 </label>
                 <label>
                   Models &amp; context <span class="label-soft">(optional — one per line)</span>
@@ -139,13 +139,12 @@
 
           <label>
             Model
-            <div class="model-row">
-              <div class="model-picker" id="mainModelPicker">
+            <span class="model-row">
+              <span class="model-picker" id="mainModelPicker">
                 <input type="text" id="model" class="model-picker-input" placeholder="moonshotai/kimi-k3" value="moonshotai/kimi-k3" autocomplete="off" spellcheck="false" />
-              </div>
+              </span>
               <button type="button" id="addModelBtn" class="icon-btn small" title="Add current model to favorites" aria-label="Add current model to favorites">＋</button>
-            </div>
-            <datalist id="modelList"></datalist>
+            </span>
           </label>
 
           <label>
@@ -172,10 +171,10 @@
 
           <label>
             Context Limit <span class="optional">(auto-detect)</span>
-            <div class="model-row">
+            <span class="model-row">
               <input type="number" id="contextLimit" min="1024" step="1024" placeholder="Auto from model / provider" />
               <button type="button" id="detectContextBtn" class="icon-btn small" title="Detect context from provider /models" aria-label="Detect model context limit">↻</button>
-            </div>
+            </span>
             <span class="hint" id="contextDetectHint">Uses provider <code>/models</code> when available, else known model table.</span>
           </label>
         </section>
@@ -183,7 +182,7 @@
         <!-- System -->
         <section class="config-panel card-panel" data-panel="sys" role="tabpanel" aria-labelledby="tab-sys" hidden>
           <div class="card-panel-title">System Prompt</div>
-          <textarea id="systemPrompt" rows="6" placeholder="You are an intelligent assistant, please reply concisely.">You are an intelligent assistant, please reply concisely.</textarea>
+          <textarea id="systemPrompt" rows="6" aria-label="System prompt" placeholder="You are an intelligent assistant, please reply concisely.">You are an intelligent assistant, please reply concisely.</textarea>
         </section>
 
         <!-- Debate -->
@@ -214,6 +213,13 @@
           <label id="debateMaxRoundsRow">
             Max Rounds
             <input type="number" id="debateMaxRounds" min="1" max="8" step="1" value="4" />
+          </label>
+          <label>
+            Agreement
+            <select id="debateConsensusMode" aria-label="Debate agreement rule">
+              <option value="all" selected>Unanimous — every expert must agree</option>
+              <option value="majority">Majority — more than half agree; the final answer resolves the dissent</option>
+            </select>
           </label>
           <label>
             Expert Reasoning
@@ -267,8 +273,8 @@
           <div id="projectDetails" hidden>
             <div class="project-meta" id="projectMeta"></div>
 
-            <div class="providers-head" style="margin-top:10px">
-              <span class="providers-label">Team members (2–4)</span>
+            <div class="providers-head mt-10">
+              <span class="providers-label">Team members (1–4)</span>
               <button type="button" id="projAddMember" class="icon-btn small" title="Add member" aria-label="Add member">＋</button>
             </div>
             <div id="projectSeats"></div>
@@ -277,6 +283,13 @@
             </label>
 
             <label>
+              Session length
+              <select id="projRunMode" aria-label="Project session length">
+                <option value="turns" selected>Fixed — stop after N turns, then ask to continue</option>
+                <option value="auto">Auto — keep working until the project is complete and verified</option>
+              </select>
+            </label>
+            <label id="projMaxTurnsRow">
               Max turns per work session
               <input type="number" id="projMaxTurns" min="4" max="80" step="1" value="24" />
             </label>
@@ -288,13 +301,13 @@
               </select>
             </label>
 
-            <div class="providers-head" style="margin-top:12px">
+            <div class="providers-head mt-12">
               <span class="providers-label">Task board</span>
             </div>
             <ul id="projectTasks" class="project-task-list"></ul>
 
             <span class="hint" id="projectCostHint"></span>
-            <button type="button" id="projectRemoveBtn" class="text-btn danger" style="margin-top:10px">Remove project from Tarka…</button>
+            <button type="button" id="projectRemoveBtn" class="text-btn danger mt-10">Remove project from Tarka…</button>
             <span class="hint">Removing never deletes your files — only Tarka's link (optionally its .tarka notes).</span>
           </div>
         </section>
@@ -370,7 +383,7 @@
 
       <div id="inputArea">
         <div class="input-wrapper">
-          <textarea id="userInput" rows="1" placeholder="Message… Enter to send · Shift+Enter newline"></textarea>
+          <textarea id="userInput" rows="1" aria-label="Message" placeholder="Message… Enter to send · Shift+Enter newline"></textarea>
           <button type="button" id="debateToggle" class="debate-toggle" aria-pressed="false" aria-label="Debate mode" title="Toggle debate mode — a team of AI experts discusses the task and presents one answer">
             <span class="debate-toggle-icon" aria-hidden="true">⚔</span><span class="debate-toggle-label">Debate</span>
           </button>
@@ -456,10 +469,10 @@
 
       <!-- project: files / tasks / decisions -->
       <div class="insp-pane" data-insp="project" hidden>
-        <div class="insp-tabs">
-          <button type="button" class="insp-tab on" data-ptab="files" aria-selected="true">Files</button>
-          <button type="button" class="insp-tab" data-ptab="tasks" aria-selected="false">Tasks</button>
-          <button type="button" class="insp-tab" data-ptab="decisions" aria-selected="false">Decisions</button>
+        <div class="insp-tabs" role="tablist" aria-label="Project workspace">
+          <button type="button" class="insp-tab on" role="tab" data-ptab="files" aria-selected="true">Files</button>
+          <button type="button" class="insp-tab" role="tab" data-ptab="tasks" aria-selected="false">Tasks</button>
+          <button type="button" class="insp-tab" role="tab" data-ptab="decisions" aria-selected="false">Decisions</button>
         </div>
         <div class="insp-body">
           <div data-ppane="files">
@@ -473,7 +486,7 @@
             <div class="insp-row"><span>members</span><b id="inspProjMembers">—</b></div>
             <div class="insp-row"><span>reasoning</span><b id="inspProjReasoning">—</b></div>
             <div class="insp-row"><span>tool calls</span><b id="inspProjTools">—</b></div>
-            <div class="insp-actions" style="margin-top:12px">
+            <div class="insp-actions mt-12">
               <button type="button" class="text-btn danger" id="inspProjStop">■ Stop session</button>
             </div>
           </div>
@@ -498,7 +511,7 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
         </svg>
-        <input type="text" id="cmdkInput" placeholder="Search chats, models &amp; actions…" autocomplete="off" spellcheck="false" />
+        <input type="text" id="cmdkInput" role="combobox" aria-label="Search chats, models and actions" aria-controls="cmdkList" aria-expanded="true" aria-autocomplete="list" placeholder="Search chats, models &amp; actions…" autocomplete="off" spellcheck="false" />
         <kbd>esc</kbd>
       </div>
       <div id="cmdkList" class="cmdk-list" role="listbox" aria-label="Commands"></div>

@@ -20,11 +20,11 @@ import { renderProjectPanel, renderProjectThread } from './src/project/journal.j
 import { activeProject, loadProjectModeLS, pjApi, projectBusy, projectCostHintText, projectJournal, projectList, projectMode, projectTasks, reconcileExclusiveModes, refreshProjectList, removeSelectedProject, renderProjectSeats, saveProjectModeLS, scheduleProjectTeamSave, selectProject, setProjectMode, setProjectShowRoles, updateDebateToggleUi, updateModeStrip, updateProjectToggleUi } from './src/project/state.js';
 import { syncLocalAgentProviders } from './src/localAgents.js';
 import { activeProviderId, loadProviders, providers } from './src/providers.js';
-import { initSessions, loadHistory, renderHistoryFromState, renderSessionList } from './src/sessions.js';
+import { initSessions, loadHistory, renderHistoryFromState, renderSessionList, saveHistory } from './src/sessions.js';
 import { restoreComposerDraft } from './src/solo.js';
-import { $, activeTeamId, copyText, debateTeams, finePointerMq, isStreaming, messages, messagesEl, mobileMq, prefersReducedMotion, savedModels, sendBtn, setActiveTeamId, setDebateTeams, setSavedModels, sidebar, sidebarScrim, statusText, userInput } from './src/state.js';
+import { $, activeTeamId, copyText, debateTeams, finePointerMq, historySaveTimer, isStreaming, messages, messagesEl, mobileMq, prefersReducedMotion, savedModels, sendBtn, setActiveTeamId, setDebateTeams, setSavedModels, sidebar, sidebarScrim, statusText, userInput } from './src/state.js';
 import { closeCmdk, cmdkOverlay, openCmdk } from './src/ui/cmdk.js';
-import { DRAWER_KEY, initInspector } from './src/ui/inspector.js';
+import { DRAWER_KEY, closeInspectorOverlay, initInspector } from './src/ui/inspector.js';
 import { primeMarks } from './src/ui/mark.js';
 import { closeProviderEditor, deleteProviderFromEditor, editingProviderId, openProviderEditor, renderProviders, saveProviderFromEditor, updateTopbar } from './src/ui/providers.js';
 import { autoResize, closeSidebar, initSidebarTabs, newChat, openSidebar, setSidebarPanel, syncRail } from './src/ui/sidebar.js';
@@ -174,6 +174,14 @@ document.addEventListener('keydown', (e) => {
       closeCmdk();
       return;
     }
+    if (closeInspectorOverlay()) return;
+    const exportMenu = $('#exportMenu');
+    if (exportMenu && !exportMenu.hidden) {
+      exportMenu.hidden = true;
+      $('#exportChat')?.setAttribute('aria-expanded', 'false');
+      $('#exportChat')?.focus();
+      return;
+    }
     // "Esc stop" works everywhere, not only with the composer focused
     if (isStreaming) {
       stopStreaming();
@@ -230,6 +238,21 @@ $('#exportChat')?.addEventListener('click', (e) => {
   const open = menu.hidden;
   menu.hidden = !open;
   $('#exportChat').setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) menu.querySelector('[role="menuitem"]')?.focus();
+});
+
+// Arrow keys walk the export menu; a menu role promises that to keyboard users.
+$('#exportMenu')?.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
+  const items = Array.from(e.currentTarget.querySelectorAll('[role="menuitem"]'));
+  if (!items.length) return;
+  const i = items.indexOf(document.activeElement);
+  const next =
+    e.key === 'Home' ? 0
+      : e.key === 'End' ? items.length - 1
+        : (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+  e.preventDefault();
+  items[next].focus();
 });
 
 $('#exportMenu')?.addEventListener('click', (e) => {
@@ -314,8 +337,12 @@ $('#projectToggle')?.addEventListener('click', () => {
 $('#projectSelect')?.addEventListener('change', async () => {
   const id = $('#projectSelect').value;
   await selectProject(id);
-  if (id && !projectMode.enabled) setProjectMode(true, { silent: true });
-  if (id) flashStatus(`Project → ${activeProject?.name || ''}`);
+  // A project whose folder is gone loads nothing (the panel shows the
+  // "folder missing" card) — switching the mode on anyway left a Project
+  // composer with no project behind it.
+  if (id && activeProject && !projectMode.enabled) setProjectMode(true, { silent: true });
+  if (id && activeProject) flashStatus(`Project → ${activeProject.name}`);
+  else if (id) flashStatus('That project’s folder is missing — remove it or recreate the folder', 3000);
 });
 
 $('#projectNewBtn')?.addEventListener('click', () => {
@@ -391,6 +418,17 @@ $('#projMaxTurns')?.addEventListener('change', () => {
   }
 });
 
+$('#projRunMode')?.addEventListener('change', () => {
+  if (!activeProject) return;
+  const auto = $('#projRunMode').value === 'auto';
+  activeProject.settings = { ...(activeProject.settings || {}), runMode: auto ? 'auto' : 'turns' };
+  const row = $('#projMaxTurnsRow');
+  if (row) row.hidden = auto;
+  scheduleProjectTeamSave();
+  const hint = $('#projectCostHint');
+  if (hint) hint.textContent = projectCostHintText();
+});
+
 $('#projReasoning')?.addEventListener('change', () => {
   if (!activeProject) return;
   activeProject.settings = { ...(activeProject.settings || {}), reasoning: $('#projReasoning').value === 'none' ? 'none' : 'inherit' };
@@ -418,6 +456,13 @@ $('#debateRoundMode')?.addEventListener('change', () => {
   syncDebateRoundModeUi();
   updateDebateCostHint();
   updateModeStrip();
+});
+
+$('#debateConsensusMode')?.addEventListener('change', () => {
+  debateSettings.consensusMode = $('#debateConsensusMode').value === 'majority' ? 'majority' : 'all';
+  markDebateCustom();
+  updateDebateCostHint();
+  saveDebateSettings();
 });
 
 $('#debateMaxRounds')?.addEventListener('input', () => {
@@ -611,6 +656,12 @@ syncLocalAgentProviders()
   })
   .catch(() => {});
 updateDebateTeamsUi();
+// The debounced save never fires if the tab closes first, and the mid-stream
+// deferral only helps while the tab lives — write what we have on the way out.
+window.addEventListener('pagehide', () => {
+  clearTimeout(historySaveTimer);
+  saveHistory({ force: true });
+});
 // Restore the active conversation (sessions migrate legacy history in place)
 initSessions();
 renderSessionList();
@@ -654,7 +705,9 @@ if (!mobileMq.matches) userInput.focus();
     /* storage unavailable */
   }
   // applied directly: a view transition on first paint just flashes
-  sidebar.classList.toggle('collapsed', !(wasOpen && !mobileMq.matches));
+  const collapsed = !(wasOpen && !mobileMq.matches);
+  sidebar.classList.toggle('collapsed', collapsed);
+  sidebar.inert = collapsed;
   syncRail();
 })();
 
