@@ -4,13 +4,16 @@ import { renderProjectPanel, renderProjectThread } from '../project/journal.js';
 import { activeProviderId, providerAccessIssue, providers } from '../providers.js';
 import { renderHistoryFromState } from '../sessions.js';
 import { $, abortController, messages, sidebar, userInput } from '../state.js';
+import { PJ_AUTO_MAX_TURNS, uniqueSeatNames } from './protocol.js';
 import { refreshProjectFiles, updateInspector } from '../ui/inspector.js';
 import { openSidebar, setSidebarPanel } from '../ui/sidebar.js';
 import { appendError, flashStatus, sweepReasoningTimers, updateScrollFab } from '../ui/transcript.js';
 
 function updateComposerPlaceholder() {
+  // Short enough to fit one line beside the mode chips — the long version
+  // wrapped and was clipped by the one-row composer.
   if (typeof projectMode !== 'undefined' && projectMode.enabled) {
-    userInput.placeholder = 'Instruct the team… they will read, write & run inside the project folder';
+    userInput.placeholder = 'Instruct the team… Enter to send';
   } else if (debateSettings.enabled) {
     userInput.placeholder = 'Describe the task for the team…';
   } else {
@@ -44,7 +47,7 @@ function refreshEmptyWelcome() {
 }
 
 /* ============================================================
-   PROJECT MODE — a team of 2–4 models builds inside one assigned
+   PROJECT MODE — a team of 1–4 models builds inside one assigned
    folder: real files, real commands, shared task board, decisions,
    persistent journal. Orchestrated here in the browser (keys never
    leave it); the server only provides sandboxed fs/exec/state.
@@ -139,32 +142,6 @@ function projectSeatName(member, idx, team) {
   return n > 1 ? `${base} ${n}` : base;
 }
 
-/**
- * Seat names must be UNIQUE: a handoff is addressed by name (`TO: <Name>`) and
- * resolved with `find`, so two seats answering to the same string make the
- * later one unreachable — every handoff aimed at it lands on the earlier seat.
- * The per-seat dedupe can still collide once names are normalized (an explicit
- * "Ada 2" alongside a derived "Ada 2", or "A|B" and "A B" both becoming "A B"),
- * so uniqueness is settled here, after normalization, where it is observable.
- */
-function uniqueSeatNames(names) {
-  const seen = new Set();
-  return names.map((raw, i) => {
-    let name = raw || `Member ${i + 1}`;
-    if (!seen.has(name.toLowerCase())) {
-      seen.add(name.toLowerCase());
-      return name;
-    }
-    for (let n = 2; ; n++) {
-      const candidate = `${name} ${n}`;
-      if (!seen.has(candidate.toLowerCase())) {
-        seen.add(candidate.toLowerCase());
-        return candidate;
-      }
-    }
-  });
-}
-
 function projectSeats() {
   const team = Array.isArray(activeProject?.team) ? activeProject.team.slice(0, 4) : [];
   const names = uniqueSeatNames(
@@ -182,7 +159,7 @@ function projectSeats() {
 function validateProjectSetup() {
   if (!activeProject) return 'no project selected — create or pick one in the Project panel.';
   const seats = projectSeats();
-  if (seats.length < 2) return 'a project team needs at least 2 members.';
+  if (seats.length < 1) return 'a project needs at least 1 member.';
   for (const s of seats) {
     if (!s.model) return `${s.name} has no model — pick one in the Project panel.`;
     if (!s.provider) return `${s.name} has no provider selected.`;
@@ -222,7 +199,7 @@ function updateModeStrip() {
     };
     mk('▦ Project', 'mode-chip-label project');
     mk(name, 'mode-chip-strong');
-    if (n) mk(`${n} members`);
+    if (n) mk(`${n} member${n === 1 ? '' : 's'}`);
     if (folder) mk(folder, 'mode-chip-mono');
     if (projectBusy) mk('working…', 'mode-chip-live');
     solo.hidden = true;
@@ -412,9 +389,13 @@ function scheduleProjectTeamSave() {
 }
 
 function projectCostHintText() {
-  const n = activeProject ? Math.max(projectSeats().length, 2) : 2;
+  const n = activeProject ? Math.max(projectSeats().length, 1) : 2;
   const t = activeProject?.settings?.maxTurns || 24;
-  return `One work session ≈ up to ${t} turns across ${n} members, each turn up to 8 tool steps (file ops are free; commands run automatically inside the folder). Stop ends the session instantly.`;
+  const who = n === 1 ? 'one member (it verifies its own "done" in a separate turn)' : `${n} members`;
+  if (activeProject?.settings?.runMode === 'auto') {
+    return `Auto — the team keeps working until a member reports the instruction done and it is verified (safety cap ${PJ_AUTO_MAX_TURNS} turns). Runs across ${who}, each turn up to 8 tool steps (file ops are free; commands run automatically inside the folder). Stop ends the session instantly.`;
+  }
+  return `One work session ≈ up to ${t} turns across ${who}, each turn up to 8 tool steps (file ops are free; commands run automatically inside the folder). Stop ends the session instantly.`;
 }
 
 /** Task board renders into the sidebar panel and the inspector's Tasks tab */
@@ -446,17 +427,15 @@ function renderProjectSeats() {
   wrap.innerHTML = '';
   if (!activeProject) return;
   if (!Array.isArray(activeProject.team)) activeProject.team = [];
-  // A usable team needs 2 seats minimum — scaffold them from the current Solo
-  // model so Create → send does not fail with "has no model".
+  // A NEW project is scaffolded with two seats from the current Solo model so
+  // Create → send does not fail with "has no model". Only an EMPTY team is
+  // scaffolded: a member deliberately trimmed to one must stay one.
   const seedModel = ($('#model')?.value || '').trim();
   const seedProv = activeProviderId || providers[0]?.id || '';
-  while (activeProject.team.length < 2) {
-    activeProject.team.push({
-      name: '',
-      model: seedModel,
-      providerId: seedProv,
-      role: ''
-    });
+  if (activeProject.team.length === 0) {
+    for (let k = 0; k < 2; k++) {
+      activeProject.team.push({ name: '', model: seedModel, providerId: seedProv, role: '' });
+    }
   }
   for (const m of activeProject.team) {
     if (!(m.model || '').trim() && seedModel) m.model = seedModel;
@@ -476,7 +455,7 @@ function renderProjectSeats() {
       '<button type="button" class="icon-btn small seat-remove" title="Remove member" aria-label="Remove member">✕</button>';
     head.querySelector('.seat-title').textContent = projectSeatName(m, i, activeProject.team);
     const removeBtn = head.querySelector('.seat-remove');
-    removeBtn.hidden = activeProject.team.length <= 2;
+    removeBtn.hidden = activeProject.team.length <= 1;
     removeBtn.addEventListener('click', () => {
       activeProject.team.splice(i, 1);
       scheduleProjectTeamSave();

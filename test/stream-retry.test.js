@@ -148,3 +148,19 @@ test('empty and reasoning-only Solo replies do not persist assistant content', (
   assert.equal(blankThink.persist, false);
   assert.equal(blankThink.display, 'reasoning-only');
 });
+
+/*
+ * The status travels as DATA. Parsed out of prose, OpenAI's real 429 body
+ * ("Please try again in 425ms") read as a 425 refusal and was never retried.
+ */
+test('a 429 whose body mentions a duration is still transient', () => {
+  const msg = 'Upstream HTTP 429: Rate limit reached for gpt-4o. Please try again in 425ms.';
+  assert.equal(R.isTransientProviderError(msg), true, 'prose: 425ms is a duration, not a status');
+  assert.equal(R.isTransientProviderError(Object.assign(new Error(msg), { status: 429 })), true);
+  assert.equal(R.isTransientProviderError(Object.assign(new Error('temporarily unavailable'), { status: 400 })), false, 'status wins over prose');
+  assert.equal(R.isTransientProviderError(Object.assign(new Error('nope'), { status: 503 })), true);
+  assert.equal(R.isTransientProviderError('HTTP 401 Unauthorized'), false);
+  assert.equal(R.isTransientProviderError('error code 400.'), false, 'a trailing period still ends the code');
+  assert.equal(R.errorStatus({ status: '429' }), 429);
+  assert.equal(R.errorStatus({ status: 0 }), null);
+});

@@ -60,6 +60,12 @@ const INSP_TITLES = { solo: 'Session', debate: 'Debate arena', project: 'Workspa
 const inspectorMq = window.matchMedia('(min-width: 1241px)');
 
 let inspectorOpen = true;
+/**
+ * Narrow screens (below inspectorMq) show the pane as a sheet instead. Kept
+ * separate from `inspectorOpen` and never persisted: a desktop that left the
+ * pane open must not cover a phone's transcript on load.
+ */
+let inspectorOverlay = false;
 /** Arena currently living in the inspector: { el, msgBody, bubble, ref } */
 let dockedArena = null;
 /** Cached project file listing for the workspace pane */
@@ -83,15 +89,57 @@ function currentMode() {
   return 'solo';
 }
 
-/** Enabled AND wide enough to actually be on screen */
+/** Docked AND wide enough to actually be on screen (the arena docks only here) */
 function inspectorVisible() {
   return inspectorOpen && inspectorMq.matches;
 }
 
-function setInspectorOpen(open, { persist = true } = {}) {
-  inspectorOpen = !!open;
+/** On screen in either form — docked pane or narrow-screen sheet */
+function inspectorShown() {
+  return inspectorMq.matches ? inspectorOpen : inspectorOverlay;
+}
+
+/** Close the narrow-screen sheet; true if there was one to close. */
+function closeInspectorOverlay() {
+  if (!inspectorOverlay) return false;
+  setInspectorOpen(false, { persist: false });
+  return true;
+}
+
+/**
+ * Apply the current layout without opening anything: docked pane per the
+ * persisted flag on wide screens, nothing on narrow ones. Boot and breakpoint
+ * crossings use this — routing them through setInspectorOpen opened the sheet
+ * on every narrow load because the persisted flag said "open".
+ */
+function applyInspectorLayout() {
   const el = $('#inspector');
-  if (el) el.hidden = !inspectorOpen;
+  if (!el) return;
+  inspectorOverlay = false;
+  el.classList.remove('overlay');
+  el.hidden = inspectorMq.matches ? !inspectorOpen : true;
+  $('#inspToggle')?.setAttribute('aria-pressed', inspectorShown() ? 'true' : 'false');
+  reflowArena();
+  if (inspectorShown()) updateInspector();
+}
+
+function setInspectorOpen(open, { persist = true } = {}) {
+  const el = $('#inspector');
+  if (!inspectorMq.matches) {
+    inspectorOverlay = !!open;
+    if (el) {
+      el.hidden = !inspectorOverlay;
+      el.classList.toggle('overlay', inspectorOverlay);
+    }
+    $('#inspToggle')?.setAttribute('aria-pressed', inspectorOverlay ? 'true' : 'false');
+    if (inspectorOverlay) updateInspector();
+    return;
+  }
+  inspectorOpen = !!open;
+  if (el) {
+    el.hidden = !inspectorOpen;
+    el.classList.remove('overlay');
+  }
   $('#inspToggle')?.setAttribute('aria-pressed', inspectorOpen ? 'true' : 'false');
   if (persist) {
     try {
@@ -114,7 +162,7 @@ function updateInspector() {
   });
   const title = $('#inspTitle');
   if (title) title.textContent = INSP_TITLES[mode] || 'Session';
-  if (!inspectorOpen) return;
+  if (!inspectorShown()) return;
   if (mode === 'project') renderProjectInspector();
   else if (mode === 'solo') updateInspectorSession();
 }
@@ -347,7 +395,7 @@ function renderProjectDecisions() {
 }
 
 function renderProjectInspector() {
-  if (!inspectorOpen) return;
+  if (!inspectorShown()) return;
   const set = (sel, text) => {
     const el = $(sel);
     if (el) el.textContent = text;
@@ -358,12 +406,17 @@ function renderProjectInspector() {
     folderEl.textContent = activeProject ? activeProject.folder : 'no project';
     folderEl.title = activeProject ? activeProject.folder : '';
   }
+  const autoRun = activeProject?.settings?.runMode === 'auto';
   set(
     '#inspProjTurn',
     projectBusy
-      ? `${projectTurnNow} / ${projectTurnMax}`
+      ? autoRun
+        ? `${projectTurnNow} · auto (cap ${projectTurnMax})`
+        : `${projectTurnNow} / ${projectTurnMax}`
       : activeProject
-        ? `idle · max ${activeProject.settings?.maxTurns || 24}`
+        ? autoRun
+          ? 'idle · auto until complete'
+          : `idle · max ${activeProject.settings?.maxTurns || 24}`
         : '—'
   );
   set('#inspProjMembers', seats.length ? seats.map((s) => s.name).join(' · ') : '—');
@@ -390,10 +443,13 @@ function initInspector() {
   } catch {
     inspectorOpen = true;
   }
-  setInspectorOpen(inspectorOpen, { persist: false });
+  applyInspectorLayout();
 
-  $('#inspToggle')?.addEventListener('click', () => setInspectorOpen(!inspectorOpen));
-  $('#inspClose')?.addEventListener('click', () => setInspectorOpen(false));
+  $('#inspToggle')?.addEventListener('click', () => setInspectorOpen(!inspectorShown()));
+  $('#inspClose')?.addEventListener('click', () => setInspectorOpen(false, { persist: inspectorMq.matches }));
+  // Crossing the breakpoint: the sheet must not survive as a docked pane and
+  // a docked pane must not linger as a sheet.
+  inspectorMq.addEventListener('change', applyInspectorLayout);
   $('#railCmdk')?.addEventListener('click', () => openCmdk());
 
   document.querySelectorAll('.insp-tab').forEach((tab) => {
@@ -435,4 +491,4 @@ function initInspector() {
 function setProjectTurnNow(v) { projectTurnNow = v; return v; }
 function setProjectTurnMax(v) { projectTurnMax = v; return v; }
 
-export { DRAWER_KEY, INSPECTOR_KEY, INSP_TITLES, buildLiveArenaRef, clearInspectorArena, currentMode, dockArenaIntoMessage, dockedArena, exportProjectJournal, initInspector, inspectorMq, inspectorOpen, inspectorVisible, mountArena, projectFiles, projectFilesInflight, projectTouchedPaths, projectTurnMax, projectTurnNow, reflowArena, refreshProjectFiles, renderProjectDecisions, renderProjectInspector, renderProjectTree, runProjectInstruction, setInspectorOpen, updateInspector, updateInspectorSession, setProjectTurnMax, setProjectTurnNow };
+export { buildLiveArenaRef, clearInspectorArena, closeInspectorOverlay, currentMode, dockArenaIntoMessage, dockedArena, DRAWER_KEY, exportProjectJournal, initInspector, INSP_TITLES, INSPECTOR_KEY, inspectorMq, inspectorOpen, inspectorVisible, mountArena, projectFiles, projectFilesInflight, projectTouchedPaths, projectTurnMax, projectTurnNow, reflowArena, refreshProjectFiles, renderProjectDecisions, renderProjectInspector, renderProjectTree, runProjectInstruction, setInspectorOpen, setProjectTurnMax, setProjectTurnNow, updateInspector, updateInspectorSession };

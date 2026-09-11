@@ -17,7 +17,7 @@ const SIDEBAR_PANEL_NOTES = {
   api: 'Providers, model, reasoning, and context for the active gateway.',
   sys: 'Instructions sent with every request (when no system message is already in the chat).',
   debate: 'Team lineup, rounds, and how the final answer is chosen.',
-  project: 'A team of 2–4 models builds inside one assigned folder — files, commands, tasks, decisions.',
+  project: 'One model or a team of up to 4 builds inside one assigned folder — files, commands, tasks, decisions.',
   favs: 'Favorite model ids — click to use; chip cycles provider scope.'
 };
 
@@ -29,17 +29,13 @@ let activeSidebarPanel = 'api';
  * `openOverride` matters because open/close run inside a View Transition, so
  * the class isn't on the element yet when the caller syncs.
  */
-
-/**
- * The rail is lit only when the drawer is actually open on that section.
- * `openOverride` matters because open/close run inside a View Transition, so
- * the class isn't on the element yet when the caller syncs.
- */
 function syncRail(openOverride) {
   const open =
     typeof openOverride === 'boolean' ? openOverride : !sidebar.classList.contains('collapsed');
   document.querySelectorAll('.rail-btn[data-panel]').forEach((btn) => {
-    btn.classList.toggle('on', open && btn.dataset.panel === activeSidebarPanel);
+    const on = open && btn.dataset.panel === activeSidebarPanel;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
 }
 
@@ -81,6 +77,10 @@ function initSidebarTabs() {
 }
 
 function openSidebar() {
+  // `inert` is what actually takes the drawer out of the tab order and the
+  // accessibility tree: on mobile the closed drawer is only translated
+  // off-screen, so without it ~30 invisible controls stayed Tab-reachable.
+  sidebar.inert = false;
   const apply = () => {
     sidebar.classList.remove('collapsed');
     if (mobileMq.matches) {
@@ -112,6 +112,11 @@ function openSidebar() {
 }
 
 function closeSidebar() {
+  // Focus inside a drawer that is about to become inert would be stranded.
+  // Blur rather than focus the composer: on a phone that raised the keyboard
+  // every time the drawer was dismissed.
+  if (sidebar.contains(document.activeElement)) document.activeElement.blur();
+  sidebar.inert = true;
   const apply = () => {
     sidebar.classList.add('collapsed');
     sidebar.classList.remove('sidebar-springing');

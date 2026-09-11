@@ -3,9 +3,10 @@
  * them as ordinary Tarka providers (same list Solo, Debate, and Project
  * already pick from).
  */
-import { activeProviderId, isKnownLocalAgent, providers, saveProviders, setActiveProviderId } from './providers.js';
+import { activeProviderId, isKnownLocalAgent, isLocalProvider, providers, saveProviders, setActiveProviderId, setLocalAgentsSynced } from './providers.js';
 import { $ } from './state.js';
 import { setActiveProvider, setLocalAgentStripRefresh } from './ui/providers.js';
+import { flashStatus } from './ui/transcript.js';
 
 const LOCAL_PROVIDER_ID = { claude: 'local-claude', codex: 'local-codex', grok: 'local-grok' };
 
@@ -69,9 +70,16 @@ async function syncLocalAgentProviders() {
   let agents = [];
   try {
     agents = await fetchLocalAgents();
-  } catch {
+  } catch (e) {
+    setLocalAgentsSynced(true);
+    // Silent failure left every local profile "not signed in" with no hint
+    // that detection itself was what failed.
+    if (providers.some((p) => isLocalProvider(p))) {
+      flashStatus(`Could not detect local CLIs: ${e.message || e}`, 4000);
+    }
     return [];
   }
+  setLocalAgentsSynced(true);
   let changed = false;
   for (const a of agents) {
     if (!isKnownLocalAgent(a.id)) continue;

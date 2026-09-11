@@ -6,7 +6,10 @@ const zlib = require('zlib');
 
 const {
   extractText,
-  normalizeBaseUrl,
+  apiUrl,
+  rejectsParam,
+  isAzureOpenAIHost,
+  upstreamHeaders,
   headerSafeApiKey,
   clampTemperature,
   clampMaxTokens,
@@ -35,16 +38,49 @@ test('formatUpstreamHttpError keeps the HTTP status on the client string', () =>
   );
 });
 
-test('normalizeBaseUrl trims slashes and a pasted /chat/completions', () => {
-  assert.equal(normalizeBaseUrl('https://openrouter.ai/api/v1'), 'https://openrouter.ai/api/v1');
-  assert.equal(normalizeBaseUrl('https://openrouter.ai/api/v1/'), 'https://openrouter.ai/api/v1');
-  assert.equal(normalizeBaseUrl('https://openrouter.ai/api/v1///'), 'https://openrouter.ai/api/v1');
+test('apiUrl appends the endpoint to the PATH, keeping Azure’s query and dropping fragments', () => {
+  const u = (b, e) => apiUrl(b, e).href;
+  assert.equal(u('https://openrouter.ai/api/v1', '/chat/completions'), 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(u('https://openrouter.ai/api/v1///', '/models'), 'https://openrouter.ai/api/v1/models');
   assert.equal(
-    normalizeBaseUrl('https://api.tokenrouter.com/v1/chat/completions'),
-    'https://api.tokenrouter.com/v1'
+    u('https://api.tokenrouter.com/v1/chat/completions', '/chat/completions'),
+    'https://api.tokenrouter.com/v1/chat/completions'
   );
-  assert.equal(normalizeBaseUrl('  https://api.openai.com/v1  '), 'https://api.openai.com/v1');
-  assert.equal(normalizeBaseUrl(null), '');
+  assert.equal(
+    u('https://acme.openai.azure.com/openai/deployments/gpt4?api-version=2024-10-21', '/chat/completions'),
+    'https://acme.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-10-21'
+  );
+  assert.equal(u('https://api.openai.com/v1#frag', '/models'), 'https://api.openai.com/v1/models');
+  assert.throws(() => apiUrl('not a url', '/models'));
+});
+
+test('isAzureOpenAIHost matches only Azure OpenAI hostnames', () => {
+  assert.equal(isAzureOpenAIHost('acme.openai.azure.com'), true);
+  assert.equal(isAzureOpenAIHost('acme.cognitiveservices.azure.com'), true);
+  assert.equal(isAzureOpenAIHost('api.openai.com'), false);
+  assert.equal(isAzureOpenAIHost('openai.azure.com.evil.example'), false);
+});
+
+/*
+ * The compat ladder must key on the parameter NAME near a rejection word. A
+ * pydantic-style 422 echoes the whole request, so every field name is in the
+ * body; a bare substring match walked the whole ladder for an unrelated 400.
+ */
+test('rejectsParam wants the parameter next to a rejection keyword', () => {
+  assert.equal(rejectsParam("Unsupported parameter: 'temperature' is not supported with this model.", 'temperature'), true);
+  assert.equal(rejectsParam('Unrecognized request argument supplied: reasoning', 'reasoning(?:_effort)?'), true);
+  assert.equal(rejectsParam('{"error":{"message":"Unsupported value: \'max_tokens\'"}}', 'max_tokens'), true);
+  assert.equal(rejectsParam('extra_forbidden: stream_options', 'stream_options|include_usage'), true);
+  const echoed =
+    '{"detail":[{"type":"value_error","msg":"Invalid role alternation","input":{"model":"x","stream_options":{"include_usage":true},"temperature":0.7,"reasoning":{"effort":"high"},"max_tokens":100}}]}';
+  assert.equal(rejectsParam(echoed, 'temperature'), false);
+  assert.equal(rejectsParam(echoed, 'reasoning(?:_effort)?'), false);
+  assert.equal(rejectsParam(echoed, 'stream_options|include_usage'), false);
+  assert.equal(rejectsParam(echoed, 'max_tokens'), false);
+  // pydantic extra_forbidden names the field in `loc`, not as a key
+  const loc = '{"detail":[{"type":"extra_forbidden","loc":["body","reasoning"],"msg":"Extra inputs are not permitted","input":{"effort":"high"}}]}';
+  assert.equal(rejectsParam(loc, 'reasoning(?:_effort)?'), true);
+  assert.equal(rejectsParam(loc, 'temperature'), false);
 });
 
 test('headerSafeApiKey rejects keys http.request would throw on', () => {
@@ -254,4 +290,23 @@ test('decodeBody handles identity, gzip and deflate', () => {
 test('decodeBody refuses a compression bomb instead of exhausting memory', () => {
   const bomb = zlib.gzipSync(Buffer.alloc(64 * 1024 * 1024, 0x61)); // 64MB of "a"
   assert.throws(() => decodeBody(bomb, 'gzip'));
+});
+
+test('upstreamHeaders sends api-key only to Azure and carries the request shape', () => {
+  const azure = upstreamHeaders(new URL('https://acme.openai.azure.com/openai/deployments/x'), 'k1', {
+    accept: 'text/event-stream',
+    encoding: 'identity',
+    contentLength: 42
+  });
+  assert.equal(azure['api-key'], 'k1');
+  assert.equal(azure.Authorization, 'Bearer k1');
+  assert.equal(azure.Accept, 'text/event-stream');
+  assert.equal(azure['Accept-Encoding'], 'identity');
+  assert.equal(azure['Content-Type'], 'application/json');
+  assert.equal(azure['Content-Length'], 42);
+  const openai = upstreamHeaders(new URL('https://api.openai.com/v1'), 'k2', { accept: 'application/json', encoding: 'gzip, deflate' });
+  assert.equal('api-key' in openai, false);
+  assert.equal(openai.Authorization, 'Bearer k2');
+  assert.equal('Content-Length' in openai, false, 'a GET carries no body headers');
+  assert.equal(openai['HTTP-Referer'] && openai['X-Title'] ? true : false, true, 'attribution headers ride along');
 });

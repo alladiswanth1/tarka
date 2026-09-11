@@ -33,24 +33,6 @@ function recentsForProvider(providerId) {
     .map((r) => r.id);
 }
 
-function rebuildModelDatalist() {
-  const list = $('#modelList');
-  if (!list) return;
-  list.innerHTML = '';
-  const ids = [
-    ...new Set([
-      ...DEFAULT_MODELS,
-      ...savedModels.map(favoriteId).filter(Boolean),
-      ...recentModels.map((r) => r.id).filter(Boolean)
-    ])
-  ];
-  ids.forEach((m) => {
-    const opt = document.createElement('option');
-    opt.value = m;
-    list.appendChild(opt);
-  });
-}
-
 function loadSavedModels() {
   try {
     const raw = JSON.parse(localStorage.getItem('customChatModels') || '[]');
@@ -77,7 +59,6 @@ function loadSavedModels() {
   loadRecentModels();
   loadModelCatalogCache();
   renderSavedModels();
-  rebuildModelDatalist();
 }
 
 function saveSavedModels() {
@@ -87,7 +68,6 @@ function saveSavedModels() {
     /* quota / storage disabled — the in-memory list still updates below */
   }
   renderSavedModels();
-  rebuildModelDatalist();
 }
 
 function loadRecentModels() {
@@ -119,7 +99,6 @@ function pushRecentModel(modelId, providerId) {
   } catch {
     /* quota */
   }
-  rebuildModelDatalist();
 }
 
 function loadModelCatalogCache() {
@@ -561,7 +540,13 @@ function attachModelPicker(input, opts = {}) {
       drop.appendChild(row);
     }
 
-    if (items.length) setActive(0);
+    // Only an EXACT match is pre-selected. Auto-activating item 0 on every
+    // keystroke made Enter replace "qwen3" with the favourite "qwen3-coder" —
+    // and save it. Arrow keys or the mouse still pick a suggestion.
+    const typed = input.value.trim().toLowerCase();
+    const exact = typed ? items.findIndex((it) => String(it.id).toLowerCase() === typed) : -1;
+    if (exact >= 0) setActive(exact);
+    else activeIdx = -1;
   };
 
   const closeDrop = () => {
@@ -654,8 +639,7 @@ function renderSavedModels() {
   if (!ul) return;
   ul.innerHTML = '';
   if (!savedModels.length) {
-    ul.innerHTML =
-      '<li style="justify-content:center;color:var(--text-dim);cursor:default">No custom models yet</li>';
+    ul.innerHTML = '<li class="model-empty">No custom models yet</li>';
     return;
   }
   savedModels.forEach((m, i) => {
@@ -697,4 +681,4 @@ function renderSavedModels() {
   });
 }
 
-export { attachModelPicker, catalogEntries, catalogIds, splitModelId, favoriteId, favoritesForProvider, fetchProviderModels, isCatalogFresh, loadModelCatalogCache, loadRecentModels, loadSavedModels, modelIdsRelated, modelMatchesCatalog, normalizeFavorite, pushRecentModel, rebuildModelDatalist, recentsForProvider, renderSavedModels, saveModelCatalogCache, saveSavedModels, updateModelWarnings, warmProviderCatalogs };
+export { attachModelPicker, catalogEntries, catalogIds, splitModelId, favoriteId, favoritesForProvider, fetchProviderModels, isCatalogFresh, loadModelCatalogCache, loadRecentModels, loadSavedModels, modelIdsRelated, modelMatchesCatalog, normalizeFavorite, pushRecentModel, recentsForProvider, renderSavedModels, saveModelCatalogCache, saveSavedModels, updateModelWarnings, warmProviderCatalogs };

@@ -21,18 +21,35 @@ function errorMessage(err) {
   return String(err.message || err.error || err);
 }
 
-/** 4xx codes named in a message, so "HTTP 400: unavailable" is still a refusal. */
+/** The HTTP status carried as DATA on an error object, when the proxy knew it. */
+function errorStatus(err) {
+  if (!err || typeof err !== 'object') return null;
+  const n = Number(err.status);
+  return Number.isInteger(n) && n >= 100 && n <= 599 ? n : null;
+}
+
+/**
+ * 4xx codes named in a message, so "HTTP 400: unavailable" is still a refusal.
+ * A code must stand alone: "try again in 425ms" is a duration, not a status —
+ * read as one it turned OpenAI's real 429 body into a non-retryable 425.
+ */
 function named4xx(msg) {
   const codes = [];
-  const re = /(^|\D)(4\d{2})(\D|$)/g;
+  const re = /(?:^|[^\w.])(4\d\d)(?![\w]|\.\d)/g;
   for (let m; (m = re.exec(msg)); ) {
-    codes.push(m[2]);
+    codes.push(m[1]);
     if (m.index === re.lastIndex) re.lastIndex++;
   }
   return codes;
 }
 
 function isTransientProviderError(err) {
+  // Prefer the status the proxy attached over anything parsed out of prose.
+  const status = errorStatus(err);
+  if (status != null) {
+    if (status === 429 || status === 529 || status >= 500) return true;
+    if (status >= 400) return false;
+  }
   const msg = errorMessage(err);
   if (!msg) return false;
   // A 402-class refusal is not a blip, even if the body also says "unavailable".
@@ -93,6 +110,7 @@ function soloAssistantDisposition({ fullContent, reasoningContent } = {}) {
 export {
   TRANSIENT_ERROR_RE,
   PAYMENT_REFUSAL_RE,
+  errorStatus,
   isTransientProviderError,
   shouldRetryStream,
   soloAssistantDisposition

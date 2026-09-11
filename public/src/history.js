@@ -14,11 +14,6 @@ function ensureMsgTokens(m) {
  * Sum cached per-message token estimates. Only re-tokenizes system prompt
  * (and callers should estimate the live draft separately).
  */
-
-/**
- * Sum cached per-message token estimates. Only re-tokenizes system prompt
- * (and callers should estimate the live draft separately).
- */
 function estimateMessagesTokens(msgs, systemPrompt) {
   let total = 0;
   if (systemPrompt && systemPrompt.trim()) {
@@ -49,8 +44,11 @@ function scheduleHistorySave() {
 }
 
 /** Cap a persisted debate record at ~150KB by dropping oldest turns first */
+const DEBATE_RECORD_CAP = 150_000;
 function truncateDebateRecord(d) {
-  // Preserve all known fields (including judge-mode) so history restore stays correct
+  // Every field restoreDebateArena reads must survive: `roster` keeps the
+  // original seat indexes and which seats dropped out (the credit list in
+  // `experts` is re-based to 0 and omits them), `stopped` keeps the label.
   const copy = {
     experts: d.experts,
     rounds: d.rounds,
@@ -60,10 +58,20 @@ function truncateDebateRecord(d) {
     finalAnswerMode: d.finalAnswerMode,
     judgeModel: d.judgeModel
   };
+  if (d.roster) copy.roster = d.roster;
+  if (d.stopped) copy.stopped = true;
   try {
-    while (copy.turns.length > 0 && JSON.stringify(copy).length > 150_000) {
-      copy.turns.shift();
+    // Measure once: re-serialising the whole record per dropped turn ran on
+    // every debounced save, for every debate in the session.
+    const fixed = JSON.stringify({ ...copy, turns: [] }).length;
+    const sizes = copy.turns.map((t) => JSON.stringify(t).length + 1);
+    let total = fixed + sizes.reduce((a, b) => a + b, 0);
+    let drop = 0;
+    while (drop < copy.turns.length && total > DEBATE_RECORD_CAP) {
+      total -= sizes[drop];
+      drop++;
     }
+    if (drop) copy.turns = copy.turns.slice(drop);
   } catch {
     copy.turns = [];
   }

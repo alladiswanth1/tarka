@@ -1,12 +1,23 @@
 {
   "name": "tarka",
   "version": "1.0.0",
-  "description": "Self-hosted chat for any OpenAI-compatible API — multi-provider, streaming, reasoning, and multi-model debate. Zero external dependencies.",
-  "main": "server.js",
+  "private": true,
+  "description": "Self-hosted chat for any OpenAI-compatible API \u2014 multi-provider, streaming, reasoning, and multi-model debate. Zero external dependencies.",
+  "bin": {
+    "tarka": "server.js"
+  },
   "scripts": {
     "server": "node server.js",
     "start": "node server.js",
     "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alladiswanth1/tarka.git"
+  },
+  "homepage": "https://github.com/alladiswanth1/tarka#readme",
+  "bugs": {
+    "url": "https://github.com/alladiswanth1/tarka/issues"
   },
   "keywords": [
     "openai",

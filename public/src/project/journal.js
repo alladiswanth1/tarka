@@ -1,4 +1,5 @@
 import { escapeHtml, renderMarkdown } from '../markdown.js';
+import { pjToolLabel } from '../project/protocol.js';
 import { activeProject, pjPersistJournal, projectCostHintText, projectJournal, renderProjectSeats, renderProjectTasksList } from '../project/state.js';
 import { $, messagesEl } from '../state.js';
 import { markStreamUnread, scrollToBottom, setStickToBottom, stickToBottom, updateScrollFab } from '../ui/transcript.js';
@@ -28,6 +29,10 @@ function renderProjectPanel() {
   }
   const mt = $('#projMaxTurns');
   if (mt) mt.value = activeProject.settings?.maxTurns || 24;
+  const rm = $('#projRunMode');
+  if (rm) rm.value = activeProject.settings?.runMode === 'auto' ? 'auto' : 'turns';
+  const mtRow = $('#projMaxTurnsRow');
+  if (mtRow) mtRow.hidden = activeProject.settings?.runMode === 'auto';
   const rs = $('#projReasoning');
   if (rs) rs.value = activeProject.settings?.reasoning === 'none' ? 'none' : 'inherit';
   renderProjectSeats();
@@ -42,53 +47,52 @@ const PJ_TOOL_ICONS = {
   write: '✎', append: '✚', edit: '✂', task_add: '☑', task_update: '☑', decision: '★', debate: '⚔'
 };
 
-function pjToolLabel(tool, args = {}) {
-  switch (tool) {
-    case 'read_file': return `read ${args.path || ''}`;
-    case 'list_files': return `list ${args.path || '/'}`;
-    case 'run': return `run: ${String(args.command || '').slice(0, 80)}`;
-    case 'mkdir': return `mkdir ${args.path || ''}`;
-    case 'move': return `move ${args.path || ''} → ${args.to || ''}`;
-    case 'delete': return `delete ${args.path || ''}`;
-    case 'write': return `write ${args.path || ''}`;
-    case 'append': return `append ${args.path || ''}`;
-    case 'edit': return `edit ${args.path || ''}`;
-    case 'task_add': return `task + ${String(args.title || '').slice(0, 60)}`;
-    case 'task_update': return `task ${args.id || ''} → ${args.status || ''}`;
-    case 'decision': return `decision recorded`;
-    case 'debate': return `team debate: ${String(args.question || '').slice(0, 60)}`;
-    default: return tool;
-  }
-}
-
 function pjSeatColor(i) {
   return `var(--debate-c${(i ?? 0) % 4})`;
 }
 
 function pjToolCardDom(e) {
   const card = document.createElement('div');
-  card.className = 'pj-tool' + (e.ok === false ? ' err' : '');
   card.innerHTML =
     '<button type="button" class="pj-tool-head">' +
     '<span class="pj-tool-ic"></span><span class="pj-tool-label"></span>' +
     '<span class="pj-tool-status"></span><span class="pj-tool-chev">▾</span>' +
     '</button><div class="pj-tool-body" hidden><pre></pre></div>';
-  card.querySelector('.pj-tool-ic').textContent = PJ_TOOL_ICONS[e.tool] || '⚙';
-  card.querySelector('.pj-tool-label').textContent = pjToolLabel(e.tool, e.args);
-  card.querySelector('.pj-tool-status').textContent =
-    e.ok === false ? 'error' : e.ms != null ? `${e.ms >= 1000 ? (e.ms / 1000).toFixed(1) + 's' : e.ms + 'ms'}` : 'ok';
-  card.querySelector('pre').textContent = e.detail || '(no output)';
   card.querySelector('.pj-tool-head').addEventListener('click', () => {
     const b = card.querySelector('.pj-tool-body');
     b.hidden = !b.hidden;
     card.classList.toggle('open', !b.hidden);
   });
+  pjFillToolCard(card, e);
   return card;
 }
 
-function pjTurnShellDom(name, seatI) {
+/**
+ * (Re)paint a tool card from an event. A card is created BEFORE the tool runs
+ * (`pending`) so a 30-second command is visible while it runs — the card used
+ * to appear only when the result came back, so the transcript sat frozen on
+ * the seat's prose with "tool calls 0" for the whole wait.
+ */
+function pjFillToolCard(card, e) {
+  card.className = 'pj-tool' + (e.pending ? ' pending' : e.ok === false ? ' err' : '') + (card.classList.contains('open') ? ' open' : '');
+  card.querySelector('.pj-tool-ic').textContent = PJ_TOOL_ICONS[e.tool] || '⚙';
+  card.querySelector('.pj-tool-label').textContent = pjToolLabel(e.tool, e.args);
+  card.querySelector('.pj-tool-status').textContent = e.pending
+    ? 'running…'
+    : e.ok === false
+      ? 'error'
+      : e.ms != null
+        ? `${e.ms >= 1000 ? (e.ms / 1000).toFixed(1) + 's' : e.ms + 'ms'}`
+        : 'ok';
+  card.querySelector('pre').textContent = e.pending ? '(waiting for the result…)' : e.detail || '(no output)';
+  return card;
+}
+
+function pjTurnShellDom(name, seatI, turnNo) {
   const turn = document.createElement('div');
   turn.className = 'pj-turn';
+  turn.dataset.seat = String(seatI ?? '');
+  if (turnNo != null) turn.dataset.turn = String(turnNo);
   turn.style.setProperty('--turn-c', pjSeatColor(seatI));
   turn.innerHTML = '<div class="pj-turn-head"><i class="pj-turn-dot"></i><b class="pj-turn-name"></b></div><div class="pj-turn-body"></div>';
   turn.querySelector('.pj-turn-name').textContent = name;
@@ -104,7 +108,7 @@ function journalEventDom(e) {
     return div;
   }
   if (e.type === 'say' || e.type === 'report') {
-    const turn = pjTurnShellDom(e.name || 'Agent', e.seat);
+    const turn = pjTurnShellDom(e.name || 'Agent', e.seat, e.turn);
     if (e.type === 'report') turn.classList.add('pj-report');
     const bubble = document.createElement('div');
     bubble.className = 'bubble pj-bubble';
@@ -113,7 +117,7 @@ function journalEventDom(e) {
     return turn;
   }
   if (e.type === 'tool') {
-    const turn = pjTurnShellDom(e.name || 'Agent', e.seat);
+    const turn = pjTurnShellDom(e.name || 'Agent', e.seat, e.turn);
     turn.classList.add('pj-tool-turn');
     turn.querySelector('.pj-turn-body').appendChild(pjToolCardDom(e));
     return turn;
@@ -172,7 +176,7 @@ function projectWelcomeDom() {
     `<div class="welcome-icon">▦</div><h1>${name}</h1>` +
     (activeProject
       ? `<p class="pj-welcome-folder">${folder}</p><p>Give the team an instruction below.<br/>They plan on a shared task board, write real files, and run commands — all inside this folder.</p>`
-      : `<p>Select or create a project in the sidebar → Project tab.<br/>Then assign 2–4 models and give the team an instruction.</p>`);
+      : `<p>Select or create a project in the sidebar → Project tab.<br/>Then assign 1–4 models and give the team an instruction.</p>`);
   return div;
 }
 
@@ -184,9 +188,24 @@ function renderProjectThread() {
     return;
   }
   const frag = document.createDocumentFragment();
+  // Consecutive prose/tool events from the same seat AND turn share one
+  // shell, as they did live: rendering every tool call under its own name
+  // header turned a six-shell session into fourteen after a reload. Events
+  // journaled before `turn` existed fall back to seat-only grouping.
+  let lastShell = null;
+  const sameTurn = (shell, e) =>
+    e.turn == null || shell.dataset.turn == null || shell.dataset.turn === String(e.turn);
   for (const e of projectJournal) {
     const dom = journalEventDom(e);
-    if (dom) frag.appendChild(dom);
+    if (!dom) continue;
+    const joinable = (e.type === 'say' || e.type === 'tool') && dom.classList.contains('pj-turn');
+    if (joinable && lastShell && lastShell.dataset.seat === String(e.seat ?? '') && sameTurn(lastShell, e)) {
+      const body = lastShell.querySelector('.pj-turn-body');
+      for (const child of Array.from(dom.querySelector('.pj-turn-body').children)) body.appendChild(child);
+      continue;
+    }
+    frag.appendChild(dom);
+    lastShell = joinable ? dom : null;
   }
   messagesEl.appendChild(frag);
   setStickToBottom(true);
@@ -210,6 +229,4 @@ function pjEmit(e, { persist = true } = {}) {
   return dom;
 }
 
-/* ---------- agent output protocol ---------- */
-
-export { PJ_TOOL_ICONS, journalEventDom, pjEmit, pjSeatColor, pjToolCardDom, pjToolLabel, pjTurnShellDom, projectWelcomeDom, renderProjectPanel, renderProjectThread };
+export { PJ_TOOL_ICONS, journalEventDom, pjEmit, pjFillToolCard, pjSeatColor, pjToolCardDom, pjToolLabel, pjTurnShellDom, projectWelcomeDom, renderProjectPanel, renderProjectThread };

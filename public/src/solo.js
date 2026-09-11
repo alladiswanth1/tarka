@@ -1,9 +1,10 @@
 import { DRAFT_KEY } from './compose.js';
 import { getContextUsage, updateContextUI } from './context.js';
 import { pushHistoryMessage, scheduleHistorySave } from './history.js';
+import { activeSessionId, persistSessionSnapshot } from './sessions.js';
 import { pushRecentModel } from './models.js';
-import { shouldRetryStream, sleep, soloAssistantDisposition, streamCompletion } from './net/stream.js';
-import { chatSession, messages, setAbortController, setLastCompletionTokens, setLastGenStats, setLastPromptTokens, setLastThinkMs, statusText, tokenInfo, userInput } from './state.js';
+import { shouldRetryStream, sleep, soloAssistantDisposition, streamCompletion, streamResultError } from './net/stream.js';
+import { chatSession, messages, mobileMq, sendBtn, setAbortController, setLastCompletionTokens, setLastGenStats, setLastPromptTokens, setLastThinkMs, statusText, tokenInfo, userInput } from './state.js';
 import { formatTokenCount } from './tokens.js';
 import { createStreamRenderer } from './ui/renderer.js';
 import { autoResize } from './ui/sidebar.js';
@@ -31,12 +32,13 @@ async function streamAssistantReply(cfg) {
   const mySession = chatSession;
 
   setStreamingUi(true);
-  statusText.textContent = 'Thinking…';
-  statusText.classList.add('thinking-status');
   tokenInfo.textContent = '';
   updateContextUI();
 
-  // Soft-block if clearly over context (still allow send, but warn hard)
+  // Soft-block if clearly over context (still allow send, but warn hard).
+  // The flash goes BEFORE "Thinking…": flashStatus restores READY_STATUS when
+  // its text is still showing, so the other order left "Ready" on screen while
+  // a slow reasoning model was still silent.
   const usage = getContextUsage();
   if (usage.pct >= 98) {
     appendError(
@@ -45,6 +47,8 @@ async function streamAssistantReply(cfg) {
   } else if (usage.pct >= 85) {
     flashStatus(`Context high · ${Math.round(usage.pct)}% of ${formatTokenCount(usage.limit)}`, 2500);
   }
+  statusText.textContent = 'Thinking…';
+  statusText.classList.add('thinking-status');
 
   const { msgEl, bubble, body: msgBody } = appendMessage('assistant', '', true);
   const renderer = createStreamRenderer(bubble);
@@ -65,8 +69,22 @@ async function streamAssistantReply(cfg) {
   // retry attempt that re-read `abortController.signal` after the backoff
   // crashed with a TypeError instead of cancelling cleanly.
   const myAc = setAbortController(new AbortController());
+  // The chat this reply belongs to, captured now: switching chats mid-stream
+  // swaps `messages` and `activeSessionId` under this function.
+  const mySessionId = activeSessionId;
+  const myMessages = messages;
 
   const isStale = () => mySession !== chatSession;
+  /** Stale run: file whatever streamed under the chat it came from. */
+  const keepForOldSession = () => {
+    if (!fullContent || !mySessionId) return;
+    const last = myMessages[myMessages.length - 1];
+    if (!last || last.role !== 'user') return;
+    const m = { role: 'assistant', content: fullContent };
+    if (reasoningContent) m.reasoning = reasoningContent;
+    myMessages.push(m);
+    persistSessionSnapshot(mySessionId, myMessages);
+  };
 
   const ensureReasoningPanel = () => {
     if (isStale() || reasoningApi || !msgBody) return;
@@ -192,7 +210,7 @@ async function streamAssistantReply(cfg) {
         shouldRetryStream({
           attempt,
           streamedAnswer: fullContent || result.content,
-          error: result.error,
+          error: result.error ? streamResultError(result) : '',
           cancelled: result.cancelled,
           stale: isStale()
         })
@@ -204,8 +222,13 @@ async function streamAssistantReply(cfg) {
 
     if (isStale() || result.cancelled) return;
 
+    if (result.finishReason === 'length') {
+      flashStatus('Reply cut off by the max-tokens limit — raise Max tokens or ask to continue', 5000);
+    } else if (result.finishReason === 'content_filter') {
+      appendError('The provider’s content filter stopped this reply.');
+    }
     if (result.error) {
-      throw new Error(result.error);
+      throw streamResultError(result);
     }
 
     if (isStale()) return;
@@ -234,7 +257,12 @@ async function streamAssistantReply(cfg) {
       renderer.finish(fullContent);
       addMessageActions(msgEl, msgBody, fullContent);
     } else {
+      // The shell stays visible but never enters history: mark it so the
+      // DOM↔history alignment (Edit, search jump) skips it. The abort path
+      // already did this; this path forgot, and one empty reply shifted every
+      // earlier Edit by one message.
       renderer.finishPlain(disposition.content);
+      markOrphanMessage(msgEl);
     }
 
     // Never push empty assistant content — some providers reject it next turn
@@ -252,7 +280,12 @@ async function streamAssistantReply(cfg) {
     statusText.textContent = READY_STATUS;
     updateContextUI();
   } catch (err) {
-    if (isStale()) return;
+    if (isStale()) {
+      // New Chat / a session switch aborted this reply: keep the partial
+      // answer with its own chat instead of leaving that chat answerless.
+      if (err.name === 'AbortError') keepForOldSession();
+      return;
+    }
     statusText.classList.remove('thinking-status');
     if (err.name === 'AbortError') {
       if (isStale()) return;
@@ -287,7 +320,11 @@ async function streamAssistantReply(cfg) {
       if (fullContent) {
         renderer.finish(fullContent);
         addMessageActions(msgEl, msgBody, fullContent);
-        pushHistoryMessage('assistant', fullContent);
+        const m = pushHistoryMessage('assistant', fullContent);
+        if (reasoningContent) {
+          m.reasoning = reasoningContent;
+          if (reasoningApi?.durationMs) m.reasoningMs = reasoningApi.durationMs;
+        }
       } else {
         // Keep the user's message in history AND view — what you see is what
         // the model receives next turn; drop only the empty assistant shell
@@ -311,7 +348,11 @@ async function streamAssistantReply(cfg) {
       setAbortController(null);
       statusText.classList.remove('thinking-status');
       setStreamingUi(false);
-      userInput.focus();
+      // Refocus the composer only when nothing else has focus: on a phone this
+      // raised the keyboard over every finished answer, and on desktop it
+      // yanked the caret out of the system prompt mid-word.
+      const ae = document.activeElement;
+      if (!mobileMq.matches && (!ae || ae === document.body || ae === sendBtn)) userInput.focus();
       // Persist after stream ends (skipped while streaming)
       scheduleHistorySave();
     }

@@ -71,12 +71,6 @@ let cmdkSearchCache = null;
  * otherwise. Stored sessions go through loadHistory()'s exact filter so a hit
  * index still lines up with the rendered transcript after switching.
  */
-
-/**
- * Messages of any session — the live array for the active one, storage
- * otherwise. Stored sessions go through loadHistory()'s exact filter so a hit
- * index still lines up with the rendered transcript after switching.
- */
 function sessionMessages(id) {
   if (id === activeSessionId) return messages;
   try {
@@ -109,12 +103,6 @@ function searchSnippetHtml(text, at, len) {
     (to < text.length ? '…' : '')
   );
 }
-
-/**
- * Substring search over every stored conversation, newest chat first.
- * Results jump straight to the matching message. Parsing ≤30 sessions once
- * per palette open keeps this instant without an index to maintain.
- */
 
 /**
  * Substring search over every stored conversation, newest chat first.
@@ -262,16 +250,29 @@ function renderCmdkList(query) {
   cmdkList.innerHTML = cmdkFiltered
     .map(
       (it, i) =>
-        `<div class="cmdk-item${i === cmdkIndex ? ' active' : ''}${it.mono ? ' mono' : ''}${doStagger && i < 12 ? ' cmdk-stagger' : ''}" role="option" aria-selected="${i === cmdkIndex}" data-i="${i}"${doStagger && i < 12 ? ` style="--i:${i}"` : ''}>` +
+        `<div class="cmdk-item${i === cmdkIndex ? ' active' : ''}${it.mono ? ' mono' : ''}${doStagger && i < 12 ? ' cmdk-stagger' : ''}" role="option" id="cmdk-opt-${i}" aria-selected="${i === cmdkIndex}" data-i="${i}">` +
         `<span class="cmdk-icon" aria-hidden="true">${it.icon}</span>` +
         `<span class="cmdk-label">${it._hl}</span>` +
         `<span class="cmdk-hint">${escapeHtml(it.hint || '')}</span>` +
         `</div>`
     )
     .join('');
+  // The stagger delay is a CSS custom property set from script, not an inline
+  // style attribute — the CSP has no 'unsafe-inline' for styles.
+  if (doStagger) {
+    cmdkList.querySelectorAll('.cmdk-stagger').forEach((el, i) => el.style.setProperty('--i', String(i)));
+  }
   // Stagger only once per open
   cmdkStagger = false;
+  syncCmdkActiveDescendant();
   cmdkList.querySelector('.cmdk-item.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+/** Tell assistive tech which option the arrow keys are on; focus stays in the input. */
+function syncCmdkActiveDescendant() {
+  if (!cmdkInput) return;
+  if (cmdkFiltered.length) cmdkInput.setAttribute('aria-activedescendant', `cmdk-opt-${cmdkIndex}`);
+  else cmdkInput.removeAttribute('aria-activedescendant');
 }
 
 function moveCmdkIndex(delta) {
@@ -281,6 +282,7 @@ function moveCmdkIndex(delta) {
     el.classList.toggle('active', i === cmdkIndex);
     el.setAttribute('aria-selected', i === cmdkIndex ? 'true' : 'false');
   });
+  syncCmdkActiveDescendant();
   cmdkList.querySelector('.cmdk-item.active')?.scrollIntoView({ block: 'nearest' });
 }
 

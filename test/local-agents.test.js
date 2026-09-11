@@ -129,7 +129,8 @@ test('detectLocalAgents reports a fake signed-in Grok Build', async () => {
 
 test('detectLocalAgents reports a fake signed-in Claude', async () => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'tarka-agent-'));
-  await fsp.writeFile(path.join(home, '.claude.json'), '{}');
+  await fsp.mkdir(path.join(home, '.claude'), { recursive: true });
+  await fsp.writeFile(path.join(home, '.claude', '.credentials.json'), '{}');
   const prevHome = process.env.TARKA_AGENT_HOME;
   const prevBin = process.env.TARKA_CLAUDE_BIN;
   process.env.TARKA_AGENT_HOME = home;
@@ -160,7 +161,8 @@ test('detectLocalAgents reports a fake signed-in Claude', async () => {
 
 test('GET /api/agents/local and a Claude chat go through the shipped server', async () => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'tarka-agent-'));
-  await fsp.writeFile(path.join(home, '.claude.json'), '{}');
+  await fsp.mkdir(path.join(home, '.claude'), { recursive: true });
+  await fsp.writeFile(path.join(home, '.claude', '.credentials.json'), '{}');
   await fsp.mkdir(path.join(home, '.grok'), { recursive: true });
   await fsp.writeFile(path.join(home, '.grok', 'auth.json'), '{}');
   try {
@@ -292,6 +294,40 @@ test('an installed but unsigned CLI is not ready', async () => {
     else process.env.TARKA_AGENT_HOME = prevHome;
     if (prevBin == null) delete process.env.TARKA_CLAUDE_BIN;
     else process.env.TARKA_CLAUDE_BIN = prevBin;
+    await fsp.rm(home, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Regression: a CLI that exits before draining stdin makes the queued prompt
+ * write fail with EPIPE — an 'error' EVENT on child.stdin, not a rejection —
+ * and unhandled it took the whole server down with every in-flight chat.
+ */
+test('a CLI that dies before reading a long prompt does not crash the server', async () => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'tarka-agent-dead-'));
+  await fsp.mkdir(path.join(home, '.claude'), { recursive: true });
+  await fsp.writeFile(path.join(home, '.claude', '.credentials.json'), '{}');
+  const dead = path.join(__dirname, 'helpers', 'fake-claude-dead.js');
+  try {
+    fs.chmodSync(dead, 0o755);
+  } catch {
+    /* windows */
+  }
+  const tarka = await startTarka({ TARKA_AGENT_HOME: home, TARKA_CLAUDE_BIN: dead });
+  try {
+    const res = await tarka.post('/api/chat', {
+      agent: 'claude',
+      model: 'default',
+      messages: [{ role: 'user', content: 'x'.repeat(2 * 1024 * 1024) }]
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /Not logged in/);
+    const health = await fetch(`${tarka.origin}/api/health`);
+    assert.equal(health.status, 200, 'server must survive the EPIPE');
+    assert.doesNotMatch(tarka.stderr(), /EPIPE/);
+  } finally {
+    await tarka.close();
     await fsp.rm(home, { recursive: true, force: true });
   }
 });

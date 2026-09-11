@@ -44,6 +44,8 @@ function exportChat(fmt = 'txt') {
   if (fmt === 'json') {
     const payload = messages.map((m) => {
       const o = { role: m.role, content: m.content };
+      if (m.reasoning) o.reasoning = m.reasoning;
+      if (m.reasoningMs) o.reasoningMs = m.reasoningMs;
       if (m.debate) o.debate = m.debate;
       return o;
     });
@@ -60,10 +62,15 @@ function exportChat(fmt = 'txt') {
       .map((m) => {
         const label = m.role === 'user' ? '**User:**' : '**Assistant:**';
         let block = `${label}\n\n${m.content}`;
+        // A literal </details> inside a turn would end the block early
+        const inert = (t) => String(t).replace(/<(\/?details|\/?summary)>/gi, '&lt;$1&gt;');
+        if (m.reasoning) {
+          block = `${label}\n\n<details>\n<summary>Thought${m.reasoningMs ? ` · ${Math.round(m.reasoningMs / 1000)}s` : ''}</summary>\n\n${inert(m.reasoning)}\n\n</details>\n\n${m.content}`;
+        }
         const turns = m.debate?.turns;
         if (turns && turns.length) {
           const body = turns
-            .map((t) => `**${t.name}${t.round ? ` · round ${t.round}` : ''}:**\n\n${t.text}`)
+            .map((t) => `**${t.name}${t.round ? ` · round ${t.round}` : ''}:**\n\n${inert(t.text)}`)
             .join('\n\n');
           block += `\n\n<details>\n<summary>${debateMeta(m.debate)}</summary>\n\n${body}\n\n</details>`;
         }
