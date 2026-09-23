@@ -212,6 +212,20 @@ function updateContextUI() {
 }
 
 /**
+ * Keystrokes (and number-field drags) repaint the meter at most once per
+ * frame: each repaint rewrites a dozen nodes and titles, and fast typing or
+ * a paste fires many input events per frame.
+ */
+let contextUiRaf = 0;
+function scheduleContextUI() {
+  if (contextUiRaf) return;
+  contextUiRaf = requestAnimationFrame(() => {
+    contextUiRaf = 0;
+    updateContextUI();
+  });
+}
+
+/**
  * Resolve the active model's context window from the provider.
  *
  * Goes through the shared model catalog rather than issuing its own
@@ -351,4 +365,4 @@ function scheduleContextDetect() {
   }, 700));
 }
 
-export { contextLimitFor, ctxCacheKey, detectContextFromProvider, getContextUsage, loadProviderContextCache, lookupKnownContext, meterHueFor, pulsedLevels, resolveContextLimit, saveProviderContextCache, scheduleContextDetect, setMeterFillWidth, setTokenLine, tokenCountAnim, updateContextUI };
+export { contextLimitFor, ctxCacheKey, detectContextFromProvider, getContextUsage, loadProviderContextCache, lookupKnownContext, meterHueFor, pulsedLevels, resolveContextLimit, saveProviderContextCache, scheduleContextDetect, scheduleContextUI, setMeterFillWidth, setTokenLine, tokenCountAnim, updateContextUI };

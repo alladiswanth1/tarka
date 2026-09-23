@@ -1,4 +1,4 @@
-import { DEBATE_MAX_SEATS, debateRoundBudget, normalizeDebateConsensusMode, normalizeDebateRoundMode } from '../debate/protocol.js';
+import { DEBATE_MAX_SEATS, debateRoundBudget, normalizeDebateConsensusMode, normalizeDebateRoundMode, normalizeDebateTurnOrder } from '../debate/protocol.js';
 import { prefillEmptyDebateSeats, renderDebateSeats, updateDebateCostHint, updateJudgeRowVisibility } from '../debate/ui.js';
 import { projectMode, refreshEmptyWelcome, setProjectMode, updateDebateToggleUi } from '../project/state.js';
 import { $, TEAMS_KEY, activeTeamId, debateTeams, setActiveTeamId, setDebateTeams } from '../state.js';
@@ -32,6 +32,9 @@ function defaultDebateSettings() {
     roundMode: 'fixed',
     // 'all' = every expert must AGREE (default). 'majority' = more than half.
     consensusMode: 'all',
+    // 'sequential' = round-robin after round 1 (default). 'parallel' = every
+    // round runs all experts at once — same calls, a fraction of the wait.
+    turnOrder: 'sequential',
     // Elite by default: experts think at the global reasoning effort, like the
     // final answer. 'off' remains available as an explicit economy choice.
     expertReasoning: 'inherit',
@@ -62,6 +65,7 @@ function loadDebateSettings() {
         maxRounds: debateRoundBudget({ roundMode: 'fixed', maxRounds: d.maxRounds }),
         roundMode: normalizeDebateRoundMode(d.roundMode),
         consensusMode: normalizeDebateConsensusMode(d.consensusMode),
+        turnOrder: normalizeDebateTurnOrder(d.turnOrder),
         expertReasoning: d.expertReasoning === 'off' ? 'off' : 'inherit',
         finalAnswerMode: d.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
         judge: {
@@ -130,6 +134,10 @@ function loadDebateTeams() {
         experts: Array.isArray(t.experts) ? t.experts : [],
         maxRounds: debateRoundBudget({ roundMode: 'fixed', maxRounds: t.maxRounds }),
         roundMode: normalizeDebateRoundMode(t.roundMode),
+        // Absent on presets saved before these were stored: applying one then
+        // keeps the current choice instead of silently resetting it.
+        ...(t.consensusMode != null ? { consensusMode: normalizeDebateConsensusMode(t.consensusMode) } : {}),
+        ...(t.turnOrder != null ? { turnOrder: normalizeDebateTurnOrder(t.turnOrder) } : {}),
         expertReasoning: t.expertReasoning === 'off' ? 'off' : 'inherit',
         finalAnswerMode: t.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
         judge: {
@@ -161,6 +169,10 @@ function snapshotDebateTeamConfig() {
     })),
     maxRounds: debateSettings.maxRounds,
     roundMode: normalizeDebateRoundMode(debateSettings.roundMode),
+    // Both used to be missing here, so a saved "majority" team came back
+    // unanimous on load — the preset silently changed how the team decides.
+    consensusMode: normalizeDebateConsensusMode(debateSettings.consensusMode),
+    turnOrder: normalizeDebateTurnOrder(debateSettings.turnOrder),
     expertReasoning: debateSettings.expertReasoning,
     finalAnswerMode: debateSettings.finalAnswerMode === 'judge' ? 'judge' : 'nominated',
     judge: {
@@ -185,6 +197,8 @@ function applyDebateTeamConfig(cfg, { enable = false } = {}) {
   }
   debateSettings.maxRounds = debateRoundBudget({ roundMode: 'fixed', maxRounds: cfg.maxRounds });
   debateSettings.roundMode = normalizeDebateRoundMode(cfg.roundMode);
+  if (cfg.consensusMode != null) debateSettings.consensusMode = normalizeDebateConsensusMode(cfg.consensusMode);
+  if (cfg.turnOrder != null) debateSettings.turnOrder = normalizeDebateTurnOrder(cfg.turnOrder);
   debateSettings.expertReasoning = cfg.expertReasoning === 'off' ? 'off' : 'inherit';
   debateSettings.finalAnswerMode = cfg.finalAnswerMode === 'judge' ? 'judge' : 'nominated';
   debateSettings.judge = {

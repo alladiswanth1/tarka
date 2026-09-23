@@ -218,6 +218,7 @@ function updateModeStrip() {
     mk('⚔ Debate', 'mode-chip-label debate');
     mk(`${n} experts`, 'mode-chip-strong');
     mk(debateSettings.roundMode === 'auto' ? 'auto rounds' : `${debateSettings.maxRounds} rounds`);
+    if (debateSettings.turnOrder === 'parallel') mk('parallel');
     mk(`final: ${fin}`);
     solo.hidden = true;
     strip.hidden = false;

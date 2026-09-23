@@ -783,3 +783,59 @@ test('a 400 that merely echoes the request costs no extra upstream attempts', as
   }
 });
 
+
+/*
+ * One upstream TCP chunk routinely carries dozens of one-token deltas. Each
+ * used to leave as its own SSE event — its own write here, its own JSON.parse
+ * and renderer round in the browser. A burst now leaves as one event per run
+ * of the same type, byte-identical and in order.
+ */
+test('a burst of deltas in one upstream chunk is forwarded as one event per type run', async () => {
+  const reasoningChunk = (text) => ({ choices: [{ index: 0, delta: { reasoning: text } }] });
+  const words = Array.from({ length: 40 }, (_, i) => `w${i} `);
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const burst = [
+      reasoningChunk('think '),
+      reasoningChunk('harder'),
+      ...words.map(contentChunk),
+      reasoningChunk(' again'),
+      contentChunk('tail'),
+      usageChunk()
+    ];
+    // Everything in ONE write, then the terminator in a second one
+    res.write(burst.map((c) => `data: ${JSON.stringify(c)}\n\n`).join(''));
+    res.end('data: [DONE]\n\n');
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.equal(out.content, words.join('') + 'tail');
+    assert.equal(out.reasoning, 'think harder again');
+    assert.deepEqual(
+      out.events.map((e) => e.type),
+      ['reasoning', 'content', 'reasoning', 'content', 'done'],
+      'adjacent deltas merge; order across types is preserved; usage still comes last'
+    );
+  } finally {
+    await provider.close();
+  }
+});
+
+test('an upstream error after streamed content arrives after that content', async () => {
+  const provider = await startMockProvider((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end(
+      `data: ${JSON.stringify(contentChunk('partial '))}\n\n` +
+        `data: ${JSON.stringify(contentChunk('answer'))}\n\n` +
+        `data: ${JSON.stringify({ error: { message: 'overloaded' } })}\n\n`
+    );
+  });
+  try {
+    const out = await readSse(await chat(provider));
+    assert.deepEqual(out.events.map((e) => e.type), ['content', 'error']);
+    assert.equal(out.content, 'partial answer');
+    assert.deepEqual(out.errors, ['overloaded']);
+  } finally {
+    await provider.close();
+  }
+});

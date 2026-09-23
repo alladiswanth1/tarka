@@ -10,12 +10,12 @@ import { abortController, messagesEl, setAbortController, statusText, userInput 
 import { refreshProjectFiles, renderProjectInspector, setProjectTurnMax, setProjectTurnNow } from '../ui/inspector.js';
 import { flashMarkAgreed } from '../ui/mark.js';
 import { createStreamRenderer } from '../ui/renderer.js';
-import { READY_STATUS, createReasoningPanel, destroyReasoningPanel, finalizeReasoningPanel, markStreamUnread, scrollToBottom, setStreamingUi, stickToBottom, sweepReasoningTimers, updateReasoningStream } from '../ui/transcript.js';
+import { READY_STATUS, clearWelcome, createReasoningPanel, destroyReasoningPanel, finalizeReasoningPanel, markStreamUnread, scrollToBottom, setStreamingUi, stickToBottom, sweepReasoningTimers, updateReasoningStream } from '../ui/transcript.js';
 import { contextLimitFor } from '../context.js';
 
 async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal, budget = Infinity) {
-  // pjTrimConvo can drop tool exchanges but never shrink this brief, so the
-  // brief alone must fit: a 200-line tree plus 30 activity lines at up to 600
+  // Bound brief sections before the final conversation trim so useful task
+  // and decision context survives: a 200-line tree plus 30 activity lines at up to 600
   // chars and an unbounded instruction reached 20k+ chars, which on a small
   // window IS the hard 400 the trim exists to prevent — on every turn.
   const share = (frac, floor) => (Number.isFinite(budget) ? Math.max(floor, Math.floor(budget * frac)) : Infinity);
@@ -70,10 +70,10 @@ async function buildProjectTurnContext(seat, instruction, turn, maxTurns, signal
     treeText,
     '',
     'TASK BOARD:',
-    tasksText,
+    pjElide(tasksText, share(0.15, 800)),
     '',
     'TEAM DECISIONS:',
-    decText,
+    pjElide(decText, share(0.1, 500)),
     '',
     'RECENT TEAM ACTIVITY (oldest → newest):',
     activity,
@@ -123,14 +123,13 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
       step > 1 && prev && prev.classList.contains('pj-turn') && !prev.classList.contains('pj-report') &&
       prev.dataset.seat === String(seat.i);
     const shell = reuse ? prev : pjTurnShellDom(seat.name, seat.i, turn);
-    const welcome = messagesEl.querySelector('.welcome');
-    if (welcome) welcome.remove();
+    clearWelcome();
     if (!reuse) messagesEl.appendChild(shell);
     const body = shell.querySelector('.pj-turn-body');
     const bubble = document.createElement('div');
     bubble.className = 'bubble pj-bubble streaming';
     body.appendChild(bubble);
-    const renderer = createStreamRenderer(bubble, { announce: false, sweep: false });
+    const renderer = createStreamRenderer(bubble, { announce: false, sweep: false, transform: pjDisplayable });
     scrollToBottom();
 
     let rApi = null;
@@ -139,6 +138,7 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
     let lastErr = null;
     /** Drop this step's UI, stopping the thought panel's timer with it */
     const dropTurnShell = () => {
+      renderer.cancel();
       rApi = destroyReasoningPanel(rApi);
       if (reuse) bubble.remove();
       else shell.remove();
@@ -149,6 +149,8 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
           await sleep(1100);
           if (opts.stale() || opts.signal.aborted) break;
           renderer.update('');
+          rApi = destroyReasoningPanel(rApi);
+          rText = '';
         }
         const r = await streamCompletion({
           baseURL: seat.provider.baseURL,
@@ -165,7 +167,7 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
           onToken: (chunk, full) => {
             if (opts.stale()) return;
             if (rApi && !rApi.finalized) finalizeReasoningPanel(rApi, { forceOpen: false });
-            renderer.update(pjDisplayable(full));
+            renderer.update(full);
             if (!stickToBottom) markStreamUnread();
             scrollToBottom();
           },
@@ -219,6 +221,7 @@ async function runProjectAgentTurn(seat, seats, instruction, turn, maxTurns, opt
       const dupe = messagesEl.lastElementChild;
       if (dupe && dupe !== shell && dupe.classList.contains('pj-turn')) dupe.remove();
     } else {
+      renderer.cancel();
       bubble.remove();
       if (!rText && !parsed.blocks.length && !reuse) shell.remove();
     }
@@ -321,7 +324,7 @@ async function runProjectReport(seat, instruction, opts) {
   const sys =
     `You are ${seat.name}, an AI engineer whose team just completed the client's instruction. ` +
     'Write the final report to the client in concise markdown: what was built/changed, the key files, how to run or verify it, and anything left open. No tools, no TURN line.';
-  const ctx = await buildProjectTurnContext(seat, instruction, 0, 0, opts.signal);
+  const ctx = await buildProjectTurnContext(seat, instruction, 0, 0, opts.signal, pjTurnBudget(seat, cfg));
   if (opts.stale()) return;
   statusText.textContent = `${seat.name} writing the report…`;
 
@@ -346,7 +349,7 @@ async function runProjectReport(seat, instruction, opts) {
       temperature: cfg.temperature,
       max_tokens: cfg.maxTokens,
       systemPrompt: sys,
-      messages: [{ role: 'user', content: ctx + '\n\nWrite the final report now.' }],
+      messages: pjTrimConvo([{ role: 'user', content: ctx + '\n\nWrite the final report now.' }], pjTurnBudget(seat, cfg)),
       signal: opts.signal,
       shouldCancel: opts.stale,
       onToken: (chunk, full) => {
@@ -356,14 +359,23 @@ async function runProjectReport(seat, instruction, opts) {
         scrollToBottom();
       }
     });
-    if (opts.stale() || r.cancelled) return;
+    if (opts.stale() || r.cancelled) {
+      renderer.cancel();
+      shell.remove();
+      return;
+    }
+    if (r.error) throw streamResultError(r);
     const text = (r.content || '').trim() || '(the team finished but produced no report)';
     renderer.finish(text);
     bubble.classList.remove('streaming');
     projectJournal.push({ t: Date.now(), type: 'report', name: seat.name, seat: seat.i, text });
     pjPersistJournal([projectJournal[projectJournal.length - 1]]);
   } catch (e) {
-    if (opts.stale()) return;
+    if (opts.stale()) {
+      renderer.cancel();
+      shell.remove();
+      return;
+    }
     if (e.name === 'AbortError') {
       // Stop mid-report: close the caret over what arrived, or drop the shell
       // so an empty bubble is not left blinking.
@@ -371,6 +383,7 @@ async function runProjectReport(seat, instruction, opts) {
         renderer.finish(`${partial.trim()}\n\n*[stopped]*`);
         bubble.classList.remove('streaming');
       } else {
+        renderer.cancel();
         shell.remove();
       }
       return;

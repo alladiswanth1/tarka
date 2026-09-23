@@ -142,7 +142,11 @@ function parseAgentResponse(text) {
 function pjDisplayable(text) {
   let s = String(text || '');
   s = s.replace(PJ_FENCE_RE, (_, kind, info) => `⚙ ${kind}${info ? ' ' + info.trim() : ''}…`);
-  const open = s.search(/```(tool|write|append|edit)[^\n]*\n(?![\s\S]*```)/);
+  // Every CLOSED fence was just replaced, so an opener still here is one
+  // being written. Asking instead for "no ``` anywhere after it" let a README
+  // whose body holds a ```bash block stream into the bubble raw — opener line
+  // and all — until its closing line arrived.
+  const open = s.search(/```(tool|write|append|edit)[^\n]*\n/);
   if (open !== -1) s = s.slice(0, open) + '\n⚙ preparing action…';
   else {
     const tick = s.search(/`{1,3}$/);
@@ -159,12 +163,13 @@ function pjDisplayable(text) {
 function pjElide(text, max = 12_000) {
   const s = String(text == null ? '' : text);
   if (s.length <= max) return s;
-  const head = s.slice(0, Math.floor(max * 0.75));
-  const tail = s.slice(-Math.floor(max * 0.2));
-  const omitted = s.length - head.length - tail.length;
-  return (
-    `${head}\n…[${omitted} chars elided — re-read the file or re-run a narrower command to recover the middle]…\n${tail}`
-  );
+  max = Math.max(0, Math.floor(max));
+  const marker = '\n…[content elided — re-read the file or run a narrower command]…\n';
+  if (max <= marker.length) return marker.slice(0, max);
+  const room = max - marker.length;
+  const head = Math.ceil(room * 0.8);
+  const tail = room - head;
+  return s.slice(0, head) + marker + (tail ? s.slice(-tail) : '');
 }
 
 /** Deep key-sort so two arg objects that differ only in key order match. */
@@ -296,7 +301,8 @@ function buildProjectSystemPrompt(seat, seats, { verify = false } = {}) {
     'replacement lines',
     '>>>>>>> REPLACE',
     '```',
-    'Multiple blocks per message are fine. Never invent other tools.',
+    'Never invent other tools.',
+    'BATCH YOUR ACTIONS: every round trip for results is another full model call — the slowest, most expensive part of a turn. Put every action that does not depend on an earlier result into ONE message: read all the files you need at once, write several files together, then run the check. Wait for results only when the next action truly depends on them.',
     '',
     'ENDING YOUR TURN',
     'When this turn\'s work is done (or a teammate should take over), stop emitting tools and end your message with exactly one plain line:',
@@ -468,43 +474,33 @@ function pjTrimConvo(convo, budget) {
   const size = (m) => String(m.content || '').length;
   let total = convo.reduce((n, m) => n + size(m), 0);
   if (total <= budget) return convo;
-  const head = convo[0];
+  budget = Math.max(0, Math.floor(budget));
+  const head = { ...convo[0] };
   const rest = convo.slice(1);
-  // Always keep the last exchange — it holds the results the model is
-  // mid-way through reading.
   let dropped = 0;
+  // Preserve role alternation and always retain the newest tool exchange.
   while (rest.length > 2 && total > budget) {
     total -= size(rest.shift()) + size(rest.shift());
     dropped += 2;
   }
-  // Last resort: the newest exchange is never dropped, so if it ALONE still
-  // exceeds the budget nothing above can help and the provider answers with the
-  // hard 400 this function exists to avoid. Elide its content instead — losing
-  // the middle of one tool result beats losing the turn.
-  let elided = false;
-  if (total > budget && rest.length >= 2) {
-    const room = Math.max(600, budget - size(head) - 400);
-    for (let i = rest.length - 1; i >= 0 && total > budget; i--) {
-      const before = size(rest[i]);
-      if (before <= room) continue;
-      rest[i] = { ...rest[i], content: pjElide(rest[i].content, room) };
-      total -= before - size(rest[i]);
-      elided = true;
-    }
+  if (dropped) {
+    const exchanges = dropped / 2;
+    head.content = `${head.content}\n\n[${exchanges} earlier tool exchange${exchanges === 1 ? '' : 's'} from this turn were dropped to fit your context window. Re-read any file you still need.]`;
   }
-  // Identity return only when NOTHING changed — returning `convo` after eliding
-  // would quietly hand back the oversized original.
-  if (!dropped) return elided ? [head, ...rest] : convo;
-  const exchanges = dropped / 2;
-  return [
-    {
-      ...head,
-      content:
-        `${head.content}\n\n[${exchanges} earlier tool exchange${exchanges === 1 ? '' : 's'} from this turn were dropped to fit your context window. ` +
-        'The task board, decisions, and file tree above are current; re-read any file you still need.]'
-    },
-    ...rest
-  ];
+  const out = [head, ...rest].map((m) => ({ ...m }));
+  total = out.reduce((n, m) => n + size(m), 0);
+  // Keep small messages intact, then share the remaining space across the
+  // oversized brief and exchange messages. Include notices in that budget.
+  if (total > budget) {
+    const smallestFirst = out.slice().sort((a, b) => size(a) - size(b));
+    let room = budget;
+    smallestFirst.forEach((m, i) => {
+      const allowance = Math.floor(room / (smallestFirst.length - i));
+      m.content = pjElide(m.content, allowance);
+      room -= size(m);
+    });
+  }
+  return out;
 }
 
 /**

@@ -979,3 +979,71 @@ test('the expert prompt tells the truth about what happens next', () => {
   const presenter = D.presenterSystemPrompt(seats[0], seats, { consensus: true, dissenters: ['Kai'] });
   assert.match(presenter, /Kai still dissented/);
 });
+
+test('project context budgets cover the brief, both exchange messages, and trim notices', () => {
+  for (const budget of [10, 100, 800, 8000]) {
+    for (const sizes of [[50000], [50000, 50000, 50000], [7900, 500, 500], [5, 4000, 4000, 4000, 4000]]) {
+      const convo = sizes.map((size, i) => ({ role: i % 2 ? 'assistant' : 'user', content: String(i).repeat(size) }));
+      const snapshot = JSON.stringify(convo);
+      const out = P.pjTrimConvo(convo, budget);
+      assert.ok(out.reduce((n, m) => n + m.content.length, 0) <= budget, `${sizes} must fit ${budget}`);
+      assert.equal(JSON.stringify(convo), snapshot, 'trimming must not mutate history');
+      assert.equal(out.length, Math.min(convo.length, 3));
+      out.forEach((m, i) => assert.equal(m.role, i % 2 ? 'assistant' : 'user'));
+    }
+  }
+});
+
+test('pjElide includes its notice within even a tiny character budget', () => {
+  for (const budget of [0, 1, 50, 100, 1000]) {
+    assert.ok(P.pjElide('x'.repeat(5000), budget).length <= budget);
+  }
+});
+
+test('turn order normalizes to round-robin unless parallel is asked for', () => {
+  assert.equal(D.normalizeDebateTurnOrder('parallel'), 'parallel');
+  for (const v of [undefined, null, '', 'sequential', 'PARALLEL', 'fast']) {
+    assert.equal(D.normalizeDebateTurnOrder(v), 'sequential');
+  }
+});
+
+test('a simultaneous vote records as cast; a round-robin CONTINUE still resets', () => {
+  const mk = () => [seat('A', 0), seat('B', 1), seat('C', 2)];
+  const par = mk();
+  D.applyDebateVote(par, par[0], 'agree', 'B', { resetOthers: false });
+  D.applyDebateVote(par, par[1], 'agree', 'B', { resetOthers: false });
+  D.applyDebateVote(par, par[2], 'continue', null, { resetOthers: false });
+  assert.deepEqual(par.map((s) => s.status), ['agree', 'agree', 'continue']);
+  assert.equal(D.debateHasConsensus(par, 'majority'), true);
+  assert.equal(D.debateHasConsensus(par, 'all'), false);
+
+  const seq = mk();
+  D.applyDebateVote(seq, seq[0], 'agree', 'B');
+  D.applyDebateVote(seq, seq[1], 'agree', 'B');
+  D.applyDebateVote(seq, seq[2], 'continue', null);
+  assert.deepEqual(seq.map((s) => s.status), ['continue', 'continue', 'continue']);
+});
+
+test('only a parallel, informed round is told the others answer at the same time', () => {
+  const seats = [seat('Ada', 0, { persona: 'x' }), seat('Kai', 1, { persona: 'y' })];
+  assert.match(D.expertSystemPrompt(seats[0], seats, { parallel: true }), /same time/);
+  assert.doesNotMatch(D.expertSystemPrompt(seats[0], seats, { parallel: false }), /same time/);
+  // The blind opening round already says what happens next
+  assert.doesNotMatch(D.expertSystemPrompt(seats[0], seats, { parallel: true, blind: true }), /same time/);
+});
+
+test('the project prompt asks for independent actions in one message', () => {
+  // Each inner step is a full model call; batching is the cheapest speedup
+  const p = P.buildProjectSystemPrompt({ name: 'Ada', i: 0 }, [{ name: 'Ada', i: 0 }]);
+  assert.match(p, /BATCH YOUR ACTIONS/);
+  assert.match(p, /ONE message/);
+});
+
+test('a tool fence still being written never streams its body into the bubble', () => {
+  const head = 'Writing the README.\n\n```write README.md\n# App\n\nRun it:\n\n```bash\nnpm start';
+  assert.equal(P.pjDisplayable(head), 'Writing the README.\n\n\n⚙ preparing action…');
+  // Once the closing line arrives it collapses to the action label, as before
+  assert.equal(P.pjDisplayable('Done.\n```write a.txt\nhi\n```\n'), 'Done.\n⚙ write a.txt…\n');
+  // A half-typed handoff marker is still withheld
+  assert.equal(P.pjDisplayable('All set.\n[TU'), 'All set.');
+});

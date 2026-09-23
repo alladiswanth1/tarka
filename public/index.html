@@ -222,6 +222,13 @@
             </select>
           </label>
           <label>
+            Turn order
+            <select id="debateTurnOrder" aria-label="Debate turn order">
+              <option value="sequential" selected>Round-robin — each expert reads the one before</option>
+              <option value="parallel">Parallel — everyone answers the last round at once (faster)</option>
+            </select>
+          </label>
+          <label>
             Expert Reasoning
             <select id="debateReasoning">
               <option value="inherit" selected>Inherit global — full effort (default)</option>

@@ -60,6 +60,7 @@ function truncateDebateRecord(d) {
   };
   if (d.roster) copy.roster = d.roster;
   if (d.stopped) copy.stopped = true;
+  if (d.turnOrder === 'parallel') copy.turnOrder = 'parallel';
   try {
     // Measure once: re-serialising the whole record per dropped turn ran on
     // every debounced save, for every debate in the session.

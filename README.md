@@ -88,6 +88,8 @@ Round 1 is blind and parallel. Later rounds share a transcript. Opening-round vo
 
 **Agreement** (optional): unanimous by default. **Majority** ends the discussion once more than half the experts agree; the final answer must address the dissent by name.
 
+**Turn order** (optional): *Round-robin* (default) has each expert read every turn before it, including the ones earlier in the same round. *Parallel* runs every round like the first: all experts answer the discussion so far at the same time. It makes the same number of calls, but each round costs one expert's wait instead of all of them. Three experts over three rounds wait on 4 replies in a row instead of 8. Agreement then has to happen within a single round.
+
 ### Project
 
 1. Toggle **Project**.

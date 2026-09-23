@@ -11,7 +11,7 @@
 
 import { scheduleComposerDraftSave, sendMessage } from './src/compose.js';
 import { getConfig, loadConfig, saveConfig, scheduleConfigAutosave } from './src/config.js';
-import { detectContextFromProvider, loadProviderContextCache, scheduleContextDetect, updateContextUI } from './src/context.js';
+import { detectContextFromProvider, loadProviderContextCache, scheduleContextDetect, scheduleContextUI, updateContextUI } from './src/context.js';
 import { debateSettings, loadDebateSettings, loadDebateTeamById, markDebateCustom, newTeamId, saveDebateSettings, saveDebateTeams, setDebateMode, snapshotDebateTeamConfig, updateDebateTeamsUi } from './src/debate/settings.js';
 import { renderDebateSeats, syncDebateRoundModeUi, updateDebateCostHint, updateJudgeRowVisibility } from './src/debate/ui.js';
 import { exportChat } from './src/export.js';
@@ -65,7 +65,7 @@ userInput.addEventListener('keydown', (e) => {
 
 userInput.addEventListener('input', () => {
   autoResize();
-  updateContextUI();
+  scheduleContextUI();
   scheduleComposerDraftSave();
 });
 
@@ -276,12 +276,12 @@ document.addEventListener('click', (e) => {
 
 $('#detectContextBtn')?.addEventListener('click', () => detectContextFromProvider({ silent: false, force: true }));
 $('#contextBadge')?.addEventListener('click', () => detectContextFromProvider({ silent: false, force: true }));
-$('#contextLimit')?.addEventListener('input', updateContextUI);
+$('#contextLimit')?.addEventListener('input', scheduleContextUI);
 $('#contextLimit')?.addEventListener('change', () => {
   updateContextUI();
 });
-$('#systemPrompt')?.addEventListener('input', updateContextUI);
-$('#maxTokens')?.addEventListener('input', updateContextUI);
+$('#systemPrompt')?.addEventListener('input', scheduleContextUI);
+$('#maxTokens')?.addEventListener('input', scheduleContextUI);
 
 // Provider editor events
 $('#addProviderBtn')?.addEventListener('click', () => {
@@ -462,6 +462,14 @@ $('#debateConsensusMode')?.addEventListener('change', () => {
   debateSettings.consensusMode = $('#debateConsensusMode').value === 'majority' ? 'majority' : 'all';
   markDebateCustom();
   updateDebateCostHint();
+  saveDebateSettings();
+});
+
+$('#debateTurnOrder')?.addEventListener('change', () => {
+  debateSettings.turnOrder = $('#debateTurnOrder').value === 'parallel' ? 'parallel' : 'sequential';
+  markDebateCustom();
+  updateDebateCostHint();
+  updateModeStrip();
   saveDebateSettings();
 });
 

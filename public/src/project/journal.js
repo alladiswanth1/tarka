@@ -2,7 +2,7 @@ import { escapeHtml, renderMarkdown } from '../markdown.js';
 import { pjToolLabel } from '../project/protocol.js';
 import { activeProject, pjPersistJournal, projectCostHintText, projectJournal, renderProjectSeats, renderProjectTasksList } from '../project/state.js';
 import { $, messagesEl } from '../state.js';
-import { markStreamUnread, scrollToBottom, setStickToBottom, stickToBottom, updateScrollFab } from '../ui/transcript.js';
+import { clearWelcome, markStreamUnread, scrollToBottom, setStickToBottom, stickToBottom, updateScrollFab } from '../ui/transcript.js';
 
 function renderProjectPanel() {
   const details = $('#projectDetails');
@@ -217,8 +217,7 @@ function renderProjectThread() {
 function pjEmit(e, { persist = true } = {}) {
   e.t = e.t || Date.now();
   projectJournal.push(e);
-  const welcome = messagesEl.querySelector('.welcome');
-  if (welcome) welcome.remove();
+  clearWelcome();
   const dom = journalEventDom(e);
   if (dom) {
     messagesEl.appendChild(dom);
