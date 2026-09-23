@@ -35,6 +35,16 @@ function normalizeDebateRoundMode(v) {
   return v === 'auto' ? 'auto' : 'fixed';
 }
 
+/**
+ * 'sequential' (default) — rounds 2+ are round-robin: each expert reads every
+ * turn before it, including this round's. 'parallel' — every round runs all
+ * experts at once over the discussion so far (simultaneous debate), so a round
+ * costs one expert's latency instead of N. Same calls, far less wall-clock.
+ */
+function normalizeDebateTurnOrder(v) {
+  return v === 'parallel' ? 'parallel' : 'sequential';
+}
+
 /** 'all' — every live seat must AGREE (default). 'majority' — more than half. */
 function normalizeDebateConsensusMode(v) {
   return v === 'majority' ? 'majority' : 'all';
@@ -59,7 +69,11 @@ function joinNames(names) {
   return names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1];
 }
 
-function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, auto = false, consensusMode = 'all' } = {}) {
+function expertSystemPrompt(
+  seat,
+  seats,
+  { blind = false, finalRound = false, auto = false, consensusMode = 'all', parallel = false } = {}
+) {
   const names = seats.map((s) => s.name).join(', ');
   const majority = normalizeDebateConsensusMode(consensusMode) === 'majority';
   const lines = [
@@ -81,6 +95,11 @@ function expertSystemPrompt(seat, seats, { blind = false, finalRound = false, au
       finalRound
         ? 'This is the only round: give your complete, independent take on the task — the final answer is written from these takes, so leave nothing for later. If your take is complete, AGREE and nominate the colleague (or yourself) best suited to write the deliverable.'
         : 'This is the opening round: give your own independent take on the task; you will see your colleagues\' views next round.'
+    );
+  }
+  if (parallel && !blind) {
+    lines.push(
+      "Every expert answers this round at the same time, each reading the same discussion — you will see your colleagues' replies to it next round. Agreement counts when it happens in the same round."
     );
   }
   if (majority && !blind) {
@@ -391,13 +410,17 @@ function debateDissenters(seats) {
  * contentious follows it: a later CONTINUE clears every earlier AGREE so
  * those seats must re-confirm. Opening-round votes are discarded separately
  * via discardOpeningVotes — this helper never treats silence as agreement.
+ *
+ * In a parallel round nothing FOLLOWS anything: every seat voted on the same
+ * transcript at the same time, so `resetOthers: false` records each vote as
+ * cast — seat order must not let one CONTINUE erase a simultaneous AGREE.
  */
-function applyDebateVote(seats, seat, status, nomineeName) {
+function applyDebateVote(seats, seat, status, nomineeName, { resetOthers = true } = {}) {
   if (!seat) return seat;
   const next = String(status || '').toLowerCase() === 'agree' ? 'agree' : 'continue';
   seat.status = next;
   seat.nominee = matchSeatByName(nomineeName, seats);
-  if (next === 'continue') {
+  if (next === 'continue' && resetOthers) {
     for (const other of seats || []) {
       if (other !== seat && other.status === 'agree') {
         other.status = 'continue';
@@ -451,5 +474,5 @@ function debateAnswerAttribution({ judgeDelivered = false, judgeSeat = null, sea
 }
 
 export {
-  DEBATE_MAX_SEATS, DEBATE_MAX_ROUNDS, DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA, debateSeatRangeLabel, normalizeDebateRoundMode, debateRoundBudget, joinNames, expertSystemPrompt, presenterSystemPrompt, judgeSystemPrompt, formatDebateTranscript, buildDebateTurnMessage, DEBATE_STATUS_RE, DEBATE_STATUS_FIND_RE, parseDebateStatus, stripStreamingStatusTail, debateTurnSpeaker, matchSeatByName, pickDebatePresenter, debateLiveSeats, debateHasConsensus, applyDebateVote, discardOpeningVotes, dropDebateSeat, debateAnswerAttribution, normalizeDebateConsensusMode, debateDissenters
+  DEBATE_MAX_SEATS, DEBATE_MAX_ROUNDS, DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA, debateSeatRangeLabel, normalizeDebateRoundMode, normalizeDebateTurnOrder, debateRoundBudget, joinNames, expertSystemPrompt, presenterSystemPrompt, judgeSystemPrompt, formatDebateTranscript, buildDebateTurnMessage, DEBATE_STATUS_RE, DEBATE_STATUS_FIND_RE, parseDebateStatus, stripStreamingStatusTail, debateTurnSpeaker, matchSeatByName, pickDebatePresenter, debateLiveSeats, debateHasConsensus, applyDebateVote, discardOpeningVotes, dropDebateSeat, debateAnswerAttribution, normalizeDebateConsensusMode, debateDissenters
 };

@@ -60,3 +60,14 @@ test('stale entries are not borrowed', () => {
   });
   assert.equal(S.getSharedContext('old-model-z9', 'tokenrouter'), null);
 });
+
+test('a remembered miss is forgotten the moment a matching window is cached', () => {
+  // The meter asks on every keystroke, so misses are memoized — which must
+  // never hide a window reported after the question was first asked.
+  assert.equal(S.getCachedContext('memo-prov', 'late-model-q7'), 0);
+  assert.equal(S.getSharedContext('late-model-q7', 'memo-prov'), null);
+  S.putCachedContext('memo-prov', 'vendor/late-model-q7', 96000);
+  S.putCachedContext('memo-other', 'late-model-q7', 64000);
+  assert.equal(S.getCachedContext('memo-prov', 'late-model-q7'), 96000);
+  assert.equal(S.getSharedContext('late-model-q7', 'memo-prov').limit, 64000);
+});

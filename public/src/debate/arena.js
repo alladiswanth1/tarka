@@ -1,4 +1,4 @@
-import { debateTurnSpeaker, joinNames } from '../debate/protocol.js';
+import { debateTurnSpeaker, joinNames, stripStreamingStatusTail } from '../debate/protocol.js';
 import { formatTokenCount } from '../tokens.js';
 import { createStreamRenderer } from '../ui/renderer.js';
 import { createReasoningPanel, destroyReasoningPanel, finalizeReasoningPanel, formatThoughtDuration, updateReasoningStream } from '../ui/transcript.js';
@@ -68,8 +68,13 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
     },
     { passive: true }
   );
+  let scrollFrame = 0;
   const bodyScroll = () => {
-    if (bodyStick) body.scrollTop = body.scrollHeight;
+    if (!bodyStick || scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (bodyStick && panel.isConnected) body.scrollTop = body.scrollHeight;
+    });
   };
 
   const titleEl = panel.querySelector('.debate-title');
@@ -99,9 +104,12 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
       const others = seats.filter((s) => s.i !== i && !s.dropped).map((s) => s.name);
       if (speaker) subEl.textContent = `${speaker.name} speaking · ${joinNames(others)} listening`;
     },
-    setAllSpeaking() {
-      panel.querySelectorAll('.debate-chip').forEach((c) => c.classList.add('speaking'));
-      subEl.textContent = 'All experts writing independent takes in parallel…';
+    setAllSpeaking(label = 'All experts writing independent takes in parallel…') {
+      // A dropped seat sits out every later parallel round
+      panel.querySelectorAll('.debate-chip').forEach((c) => {
+        c.classList.toggle('speaking', !c.classList.contains('dropped'));
+      });
+      subEl.textContent = label;
     },
     setSeatStatus(i, agreed) {
       const chip = panel.querySelector(`.debate-chip[data-i="${i}"]`);
@@ -123,12 +131,12 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
       panel.querySelectorAll('.debate-chip').forEach((c) => c.classList.remove('speaking'));
       subEl.textContent = `${label || 'Judge'} is writing the final answer…`;
     },
-    addRoundDivider(n, { blind = false } = {}) {
+    addRoundDivider(n, { blind = false, parallel = false } = {}) {
       const d = document.createElement('div');
       d.className = 'debate-round-divider';
       const span = document.createElement('span');
       span.textContent =
-        blind || n === 1 ? `Round ${n} · independent takes` : `Round ${n}`;
+        blind || n === 1 ? `Round ${n} · independent takes` : parallel ? `Round ${n} · in parallel` : `Round ${n}`;
       d.appendChild(span);
       body.appendChild(d);
       bodyScroll();
@@ -142,9 +150,11 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
       turn.querySelector('.debate-turn-name').textContent = seat.name;
       body.appendChild(turn);
       const bubbleEl = turn.querySelector('.debate-turn-bubble');
+      // The status marker is machine-read; it never flashes up while streaming.
       const renderer = createStreamRenderer(bubbleEl, {
         announce: false,
-        sweep: false
+        sweep: false,
+        transform: stripStreamingStatusTail
       });
       // Lazy per-turn reasoning panel — experts' chain of thought stays visible
       let rApi = null;
@@ -223,6 +233,8 @@ function createDebateArena(seats, maxRounds, { auto = false } = {}) {
     },
     stopTimer() {
       clearInterval(timer);
+      if (scrollFrame) cancelAnimationFrame(scrollFrame);
+      scrollFrame = 0;
     }
   };
 }
@@ -265,19 +277,26 @@ function restoreDebateArena(refs, record) {
   const arena = createDebateArena(seats, record.rounds || 1);
   arena.stopTimer();
   const turns = Array.isArray(record.turns) ? record.turns : [];
-  let lastRound = 0;
-  turns.forEach((t) => {
-    // The record already knows who spoke — believe it, don't re-derive the name
-    // from a seat index that no longer lines up. See debateTurnSpeaker().
-    const seat = debateTurnSpeaker(t, seats);
-    const r = t.round || 0;
-    if (r && r !== lastRound) {
-      arena.addRoundDivider(r, { blind: r === 1 });
-      lastRound = r;
-    }
-    arena.addTurn(seat).finish(String(t.text || ''));
-  });
-  if (!turns.length) arena.addNote('(transcript unavailable — truncated in storage)');
+  // A restored arena starts collapsed, and most are never reopened — yet every
+  // turn's markdown used to be rendered on load, so a chat with a few long
+  // debates paid for dozens of hidden renders before its first paint. The
+  // transcript is built on the first open instead (same click, before paint).
+  const renderTurns = () => {
+    let lastRound = 0;
+    turns.forEach((t) => {
+      // The record already knows who spoke — believe it, don't re-derive the
+      // name from a seat index that no longer lines up. See debateTurnSpeaker().
+      const seat = debateTurnSpeaker(t, seats);
+      const r = t.round || 0;
+      if (r && r !== lastRound) {
+        arena.addRoundDivider(r, { blind: r === 1, parallel: record.turnOrder === 'parallel' });
+        lastRound = r;
+      }
+      arena.addTurn(seat).finish(String(t.text || ''));
+    });
+    if (!turns.length) arena.addNote('(transcript unavailable — truncated in storage)');
+  };
+  arena.el.querySelector('.reasoning-toggle').addEventListener('click', renderTurns, { once: true });
   seats.forEach((s) => {
     if (s.dropped) arena.setSeatDropped(s.i);
   });

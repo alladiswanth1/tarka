@@ -54,6 +54,34 @@ function saveProviderContextCache() {
   }
 }
 
+/**
+ * Answers already worked out, keyed on the question. A miss scans the whole
+ * cache — two big gateway catalogs are ~2000 entries, each compared with
+ * modelIdsRelated — and the meter asks on EVERY composer keystroke, as does
+ * every debate/project seat budget. That was ~3ms of input latency per key for
+ * a model id the catalogs do not list. Any write, a cache swap, or a minute
+ * passing (entries age out on a TTL) starts a fresh memo.
+ */
+const MEMO_MAX_AGE_MS = 60_000;
+let memo = new Map();
+let memoFor = null;
+let memoAt = 0;
+function memoized(key, compute) {
+  const now = Date.now();
+  if (memoFor !== providerContextCache || now - memoAt > MEMO_MAX_AGE_MS) {
+    memo = new Map();
+    memoFor = providerContextCache;
+    memoAt = now;
+  }
+  if (memo.has(key)) return memo.get(key);
+  const value = compute();
+  memo.set(key, value);
+  return value;
+}
+function forgetMemo() {
+  memoFor = null;
+}
+
 /** A cache entry that is present, positive, and not past its TTL. */
 function isFresh(hit) {
   if (!hit || !(hit.limit > 0)) return 0;
@@ -77,6 +105,10 @@ function isFresh(hit) {
 function getCachedContext(providerId, modelId) {
   const exact = isFresh(providerContextCache[ctxCacheKey(providerId, modelId)]);
   if (exact) return exact;
+  return memoized(`c\0${providerId}\0${modelId}`, () => scanCachedContext(providerId, modelId));
+}
+
+function scanCachedContext(providerId, modelId) {
   const want = String(modelId || '');
   if (!want) return 0;
   const prefix = `${String(providerId || '')}::`;
@@ -114,6 +146,12 @@ function getCachedContext(providerId, modelId) {
  * within a rank. Returns { limit, providerId, modelId } or null.
  */
 function getSharedContext(modelId, excludeProviderId) {
+  const hit = memoized(`s\0${modelId}\0${excludeProviderId}`, () => scanSharedContext(modelId, excludeProviderId));
+  // A copy: the memo must not be edited through a caller's reference
+  return hit ? { ...hit } : null;
+}
+
+function scanSharedContext(modelId, excludeProviderId) {
   const want = String(modelId || '');
   if (!want) return null;
   const wantLower = want.toLowerCase();
@@ -143,6 +181,7 @@ function getSharedContext(modelId, excludeProviderId) {
 
 function putCachedContext(providerId, modelId, limit, extra) {
   if (!modelId || !(limit > 0)) return;
+  forgetMemo();
   providerContextCache[ctxCacheKey(providerId, modelId)] = {
     limit: Math.round(limit),
     at: Date.now(),

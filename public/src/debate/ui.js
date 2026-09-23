@@ -1,4 +1,4 @@
-import { DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, debateSeatRangeLabel, normalizeDebateRoundMode } from '../debate/protocol.js';
+import { DEBATE_AUTO_MAX_ROUNDS, DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, debateSeatRangeLabel, normalizeDebateRoundMode, normalizeDebateTurnOrder } from '../debate/protocol.js';
 import { debateSettings, markDebateCustom, scheduleDebateSave, updateDebateTeamsUi } from '../debate/settings.js';
 import { attachModelPicker, updateModelWarnings } from '../models.js';
 import { activeProviderId, providerAccessIssue, providers } from '../providers.js';
@@ -55,7 +55,11 @@ function debateCostHintText() {
     (debateSettings.consensusMode === 'majority'
       ? 'Majority rule — the discussion ends once more than half the experts agree; the final answer must address the dissent. '
       : '');
-  return `${schedule}One debate ≈ (${e} experts × ${r} rounds) + ${finalLabel} = up to ${e * r + 1} API calls (excluding automatic retries). Round 1 is blind and runs in parallel. Each expert runs its own model & provider. By default every expert AND the final answer run at your global reasoning effort — switch Expert Reasoning to Off to trade quality for speed.`;
+  const order =
+    normalizeDebateTurnOrder(debateSettings.turnOrder) === 'parallel'
+      ? `Every round runs all experts in parallel, so a debate waits on about ${r + 1} replies in a row instead of ${(e * (r - 1)) + 2}.`
+      : 'Round 1 is blind and runs in parallel; later rounds go round-robin (switch Turn order to Parallel for a much faster debate at the same number of calls).';
+  return `${schedule}One debate ≈ (${e} experts × ${r} rounds) + ${finalLabel} = up to ${e * r + 1} API calls (excluding automatic retries). ${order} Each expert runs its own model & provider. By default every expert AND the final answer run at your global reasoning effort — switch Expert Reasoning to Off to trade quality for speed.`;
 }
 
 function syncDebateRoundModeUi() {
@@ -257,6 +261,8 @@ function renderDebateSeats() {
   if (reasoning) reasoning.value = debateSettings.expertReasoning;
   const agreement = $('#debateConsensusMode');
   if (agreement) agreement.value = debateSettings.consensusMode === 'majority' ? 'majority' : 'all';
+  const turnOrder = $('#debateTurnOrder');
+  if (turnOrder) turnOrder.value = normalizeDebateTurnOrder(debateSettings.turnOrder);
   const finalMode = $('#debateFinalMode');
   if (finalMode) finalMode.value = debateSettings.finalAnswerMode === 'judge' ? 'judge' : 'nominated';
   updateDebateCostHint();

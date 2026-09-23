@@ -102,7 +102,14 @@ function announceToScreenReader(text) {
   });
 }
 
-function createStreamRenderer(bubble, { announce = true, sweep = true } = {}) {
+/**
+ * `transform` maps the raw streamed text to what the bubble shows (Debate
+ * hides the status line, Project hides tool fences). It runs at paint time —
+ * at most once per frame — never per token: providers deliver bursts of
+ * tokens per frame, and a transform that reads the whole reply turned a
+ * streamed 50KB file write into O(n²) main-thread work.
+ */
+function createStreamRenderer(bubble, { announce = true, sweep = true, transform = null } = {}) {
   const grow = document.createElement('div');
   grow.className = 'bubble-grow';
   const inner = document.createElement('div');
@@ -129,12 +136,25 @@ function createStreamRenderer(bubble, { announce = true, sweep = true } = {}) {
 
   let raf = 0;
   let dirty = false;
-  let content = '';
+  let raw = ''; // latest text handed to update()
+  let content = ''; // display text as last painted
   let smoothH = 0;
   let done = false;
   let paintedLen = 0;
   let stableLen = 0; // chars of `content` frozen into stableEl
+  let frozen = ''; // content.slice(0, stableLen) — what stableEl was rendered from
   let lastHeavyPaint = 0;
+  const display = () => (transform ? String(transform(raw) ?? '') : raw);
+  const frozenStillValid = (text) =>
+    text.length >= stableLen
+      ? text.startsWith(frozen)
+      : frozen.startsWith(text) && /^\n*$/.test(frozen.slice(text.length));
+  const dropFrozen = () => {
+    stableEl.innerHTML = '';
+    stableLen = 0;
+    frozen = '';
+    paintedLen = 0;
+  };
   // aria-busy while this bubble is actively streaming
   const msgEl = bubble.closest('.msg');
   if (msgEl) msgEl.setAttribute('aria-busy', 'true');
@@ -203,17 +223,10 @@ function createStreamRenderer(bubble, { announce = true, sweep = true } = {}) {
     raf = 0;
     if (!dirty || done) return;
 
-    // Reset path (retries): content no longer extends the frozen prefix
-    if (content.length < stableLen) {
-      stableEl.innerHTML = '';
-      stableLen = 0;
-      paintedLen = 0;
-    }
-
     // A very large in-progress block (huge unclosed code fence) re-renders at
-    // ~10fps instead of every frame; small tails stay per-frame smooth.
-    const tailSize = content.length - stableLen;
-    if (tailSize > 12_000) {
+    // ~10fps instead of every frame; small tails stay per-frame smooth. Sized
+    // on the RAW text: a transform reads all of it, even when it shows little.
+    if (raw.length - stableLen > 12_000) {
       const now = performance.now();
       if (now - lastHeavyPaint < 100) {
         if (!raf) raf = requestAnimationFrame(paint);
@@ -222,6 +235,17 @@ function createStreamRenderer(bubble, { announce = true, sweep = true } = {}) {
       lastHeavyPaint = now;
     }
     dirty = false;
+
+    const text = display();
+    // Project's display holds still for as long as a tool fence is open, so
+    // most of those frames change nothing on screen.
+    if (text === content) return;
+    // Frozen blocks survive only while the text still begins with them. A
+    // retry's reset-and-refill invalidates them; a transform withholding a
+    // half-typed line ("[" of Debate's status marker) may only trim the blank
+    // line after the last frozen block, which the render never included.
+    if (stableLen && !frozenStillValid(text)) dropFrozen();
+    content = text;
 
     const prevLen = paintedLen;
     paintedLen = content.length;
@@ -233,6 +257,7 @@ function createStreamRenderer(bubble, { announce = true, sweep = true } = {}) {
       const chunk = content.slice(stableLen, cut).replace(/\n+$/, '');
       if (chunk) stableEl.insertAdjacentHTML('beforeend', renderMarkdown(chunk));
       stableLen = cut;
+      frozen = content.slice(0, cut);
     }
 
     tailEl.innerHTML = renderMarkdown(content.slice(stableLen));
@@ -255,16 +280,23 @@ function createStreamRenderer(bubble, { announce = true, sweep = true } = {}) {
   };
 
   return {
+    cancel: stop,
+    /**
+     * O(1) per token: store the text and ask for a frame. Everything that
+     * reads the whole reply (transform, prefix check, markdown) waits for the
+     * paint, so a burst of tokens inside one frame costs one render.
+     */
     update(text) {
-      if (done) return;
-      content = text;
+      const next = String(text ?? '');
+      if (done || next === raw) return;
+      raw = next;
       dirty = true;
       if (!raf) raf = requestAnimationFrame(paint);
     },
     /** Final formatted render (cancels pending frame, removes caret) */
     finish(finalText) {
       stop();
-      const final = finalText != null ? finalText : content;
+      const final = finalText != null ? finalText : display();
       // One clean full render normalizes any chunk-boundary differences
       inner.innerHTML = renderMarkdown(final);
       if (sweep) playCompletionSweep(bubble);

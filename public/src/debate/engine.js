@@ -1,6 +1,6 @@
 import { contextLimitFor, getContextUsage, updateContextUI } from '../context.js';
 import { buildDebateCredit, createDebateArena } from '../debate/arena.js';
-import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, applyDebateVote, buildDebateTurnMessage, debateAnswerAttribution, debateHasConsensus, debateLiveSeats, debateRoundBudget, discardOpeningVotes, dropDebateSeat, expertSystemPrompt, formatDebateTranscript, joinNames, judgeSystemPrompt, parseDebateStatus, pickDebatePresenter, presenterSystemPrompt, stripStreamingStatusTail, normalizeDebateConsensusMode, debateDissenters } from '../debate/protocol.js';
+import { DEBATE_DEFAULT_PERSONA, DEBATE_MAX_SEATS, normalizeDebateTurnOrder, applyDebateVote, buildDebateTurnMessage, debateAnswerAttribution, debateHasConsensus, debateLiveSeats, debateRoundBudget, discardOpeningVotes, dropDebateSeat, expertSystemPrompt, formatDebateTranscript, joinNames, judgeSystemPrompt, parseDebateStatus, pickDebatePresenter, presenterSystemPrompt, stripStreamingStatusTail, normalizeDebateConsensusMode, debateDissenters } from '../debate/protocol.js';
 import { debateSettings } from '../debate/settings.js';
 import { validateDebateSetup } from '../debate/ui.js';
 import { pushHistoryMessage, scheduleHistorySave } from '../history.js';
@@ -45,10 +45,11 @@ function seatTranscriptBudget(seat, cfg, { prior = '', task = '' } = {}) {
 }
 
 /**
- * Orchestrates a full debate: round-robin expert turns → peer consensus →
- * presentation turn streamed into a normal assistant bubble. isStreaming is
- * true for the whole run; abort kills the current fetch and the loop; the
- * chatSession guard is checked between every await.
+ * Orchestrates a full debate: expert turns (round-robin, or every round in
+ * parallel) → peer consensus → presentation turn streamed into a normal
+ * assistant bubble. isStreaming is true for the whole run; abort kills the
+ * current fetch and the loop; the chatSession guard is checked between every
+ * await.
  */
 async function runDebate(cfg, task) {
   const mySession = chatSession;
@@ -89,6 +90,8 @@ async function runDebate(cfg, task) {
   const roundMode = ds.roundMode === 'auto' ? 'auto' : 'fixed';
   const autoRounds = roundMode === 'auto';
   const maxRounds = debateRoundBudget({ roundMode, maxRounds: ds.maxRounds });
+  // Snapshot too: every round of a parallel debate must be parallel.
+  const parallelRounds = normalizeDebateTurnOrder(ds.turnOrder) === 'parallel';
 
   // Learn every seat model's real context window before the first trim decision
   // is made. Cached per provider for an hour, so this is usually free; without
@@ -151,8 +154,8 @@ async function runDebate(cfg, task) {
    * every earlier agreement predates those problems, so those seats must
    * re-confirm. Consensus therefore needs an unbroken all-seats run of AGREEs.
    */
-  const applyStatus = (seat, status, nominee) => {
-    applyDebateVote(seats, seat, status, nominee);
+  const applyStatus = (seat, status, nominee, opts) => {
+    applyDebateVote(seats, seat, status, nominee, opts);
     for (const s of seats) arena.setSeatStatus(s.i, s.status === 'agree');
   };
 
@@ -226,7 +229,13 @@ async function runDebate(cfg, task) {
     // Address only the experts still in the room — a dropped seat is not
     // a colleague whose silence needs explaining.
     const roster = liveSeats().length >= 2 ? liveSeats() : seats;
-    const sys = expertSystemPrompt(seat, roster, { blind, finalRound, auto: autoRounds, consensusMode });
+    const sys = expertSystemPrompt(seat, roster, {
+      blind,
+      finalRound,
+      auto: autoRounds,
+      consensusMode,
+      parallel: parallelRounds
+    });
     const userMsg = buildDebateTurnMessage({
       task,
       prior,
@@ -252,6 +261,7 @@ async function runDebate(cfg, task) {
         if (attempt > 1) {
           await sleep(900);
           if (isStale() || signal.aborted) return abandon();
+          lastFull = '';
           turnUi.reset();
         }
         const r = await callSeat(
@@ -262,7 +272,7 @@ async function runDebate(cfg, task) {
             lastFull = full;
             if (isStale()) return;
             turnUi.settleReasoning();
-            turnUi.update(stripStreamingStatusTail(full));
+            turnUi.update(full);
             if (!stickToBottom) markStreamUnread();
             scrollToBottom();
           },
@@ -321,21 +331,32 @@ async function runDebate(cfg, task) {
     // ---- Turn loop: up to maxRounds full rounds ----
     // Round 1 is BLIND and PARALLEL: no seat sees the others, so all experts
     // stream their independent takes concurrently (≈N× faster wall-clock).
-    // Later rounds are strict round-robin over the shared transcript.
+    // Later rounds are strict round-robin over the shared transcript — unless
+    // the team runs in parallel, where every round works like round 1 over
+    // the discussion so far: a round costs one expert's latency, not N.
     outer: for (let round = 1; round <= maxRounds; round++) {
       roundsRun = round;
       arena.setRound(round);
       // Always show a divider; round 1 labeled "independent takes"
-      arena.addRoundDivider(round, { blind: round === 1 });
+      arena.addRoundDivider(round, { blind: round === 1, parallel: parallelRounds });
 
-      if (round === 1) {
-        arena.setAllSpeaking();
-        statusText.textContent = 'Experts writing independent takes…';
+      if (round === 1 || parallelRounds) {
+        // Round 1 seats everyone configured; later rounds only who is left.
+        const roundSeats = round === 1 ? seats : liveSeats();
+        if (round === 1) {
+          arena.setAllSpeaking();
+          statusText.textContent = 'Experts writing independent takes…';
+        } else {
+          arena.setAllSpeaking(`All experts answering round ${round - 1} in parallel…`);
+          statusText.textContent = `Round ${round} · experts answering in parallel…`;
+        }
         // addTurn runs synchronously before the first await, so the arena
-        // lays the turn cards out in seat order regardless of finish order
-        const turnUis = seats.map((seat) => arena.addTurn(seat));
+        // lays the turn cards out in seat order regardless of finish order.
+        // runSeatTurn builds each prompt before its first await too, so every
+        // seat reads the same transcript: the one the previous round left.
+        const turnUis = roundSeats.map((seat) => arena.addTurn(seat));
         const outcomes = await Promise.all(
-          seats.map((seat, k) => runSeatTurn(seat, 1, turnUis[k]))
+          roundSeats.map((seat, k) => runSeatTurn(seat, round, turnUis[k]))
         );
         if (isStale()) return;
         // Harvest BEFORE reacting to a stop. Seats run in parallel here, so
@@ -344,11 +365,13 @@ async function runDebate(cfg, task) {
         // transcript the stop path unwinds the user's message too, erasing an
         // exchange they watched happen.
         const abortedRound = outcomes.some((o) => o && o.aborted);
-        for (let k = 0; k < seats.length; k++) {
+        for (let k = 0; k < roundSeats.length; k++) {
+          const seat = roundSeats[k];
           const out = outcomes[k];
           if (out && out.ok) {
-            applyStatus(seats[k], out.status, out.nominee);
-            transcript.push({ name: seats[k].name, text: out.cleanText, seatIdx: seats[k].i, round: 1 });
+            // Simultaneous votes: none of them came after another
+            applyStatus(seat, out.status, out.nominee, { resetOthers: false });
+            transcript.push({ name: seat.name, text: out.cleanText, seatIdx: seat.i, round });
             transcriptTokens += estimateTokens(out.cleanText);
             continue;
           }
@@ -356,7 +379,7 @@ async function runDebate(cfg, task) {
           // endpoint, so those seats are not dropped or blamed in the arena.
           if (abortedRound) continue;
           errored = true;
-          dropSeat(seats[k], out?.err);
+          dropSeat(seat, out?.err);
         }
         arena.setTokens(transcriptTokens, debateUsage);
         if (abortedRound) {
@@ -367,6 +390,15 @@ async function runDebate(cfg, task) {
         if (liveSeats().length < 2) {
           arena.addNote('⚠ Fewer than two experts are answering — ending the debate early.');
           break outer;
+        }
+        if (round > 1) {
+          // Every live seat voted on the same transcript in this round, so
+          // this is the whole team's verdict — drops already accounted for.
+          if (hasConsensus()) {
+            consensus = true;
+            break outer;
+          }
+          continue;
         }
         // Blind agreement is not agreement: every seat wrote without reading a
         // word of anyone else's take. Clear the opening votes so consensus can
@@ -632,7 +664,8 @@ async function runDebate(cfg, task) {
           consensus: false,
           stopped: true,
           turns: transcript.map((t) => ({ name: t.name, text: t.text, round: t.round, i: t.seatIdx })),
-          finalAnswerMode: 'nominated'
+          finalAnswerMode: 'nominated',
+          ...(parallelRounds ? { turnOrder: 'parallel' } : {})
         }
       });
       persistSessionSnapshot(mySessionId, myMessages);
@@ -779,7 +812,8 @@ async function runDebate(cfg, task) {
       // `i` = seat index — restores colors/attribution even with duplicate names
       turns: transcript.map((t) => ({ name: t.name, text: t.text, round: t.round, i: t.seatIdx })),
       finalAnswerMode: judgeDelivered ? 'judge' : 'nominated',
-      judgeModel: judgeDelivered ? judgeSeat?.model || '' : undefined
+      judgeModel: judgeDelivered ? judgeSeat?.model || '' : undefined,
+      ...(parallelRounds ? { turnOrder: 'parallel' } : {})
     };
     addMessageActions(msgEl, msgBody, stored);
     arena.finalize({

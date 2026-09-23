@@ -12,9 +12,14 @@ import { setFaviconThinking } from '../ui/mark.js';
 import { autoResize, openSidebar, setSidebarPanel } from '../ui/sidebar.js';
 
 // ========== Chat UI ==========
+/**
+ * The welcome card is only ever the transcript's first child (it is rendered
+ * into an emptied #messages). querySelector searched every descendant for it
+ * on each appended message — quadratic when a long chat is restored.
+ */
 function clearWelcome() {
-  const welcome = messagesEl.querySelector('.welcome');
-  if (welcome) welcome.remove();
+  const first = messagesEl.firstElementChild;
+  if (first && first.classList.contains('welcome')) first.remove();
 }
 
 function formatThoughtDuration(ms) {

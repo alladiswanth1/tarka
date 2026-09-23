@@ -147,6 +147,15 @@ completed.
   mid-stream) and the env var that raises it, and Tarka writes its own
   `: keepalive` SSE comments downstream every `TARKA_SSE_KEEPALIVE_MS` so a
   reverse proxy in front of it cannot kill the "idle" response first.
+- **Token deltas are forwarded per upstream chunk, not per token.** One TCP
+  chunk from a fast provider carries dozens of one-token deltas, and each used
+  to leave as its own SSE event — its own write, and in the browser its own
+  JSON.parse and trip through the renderer. `createSseCoalescer` (`http.js`)
+  joins adjacent `content` / `reasoning` text and flushes at the end of every
+  upstream chunk, so nothing waits on a later token and order across types is
+  kept; `write()` flushes first for errors and `done`. Local CLI agents use the
+  same coalescer per stdout chunk. Each upstream event is also parsed once:
+  the parse that proves a `data:` line complete IS the event.
 - **Usage is forwarded once, at end of stream.** Some gateways attach a running
   `usage` to every chunk; the debate arena sums what it receives, so forwarding
   each one inflated reported spend by the chunk count. `pendingUsage` keeps the
@@ -318,12 +327,18 @@ sendMessage()  →  streamAssistantReply(cfg)
 One transparent retry on transient failures, but only when nothing has streamed
 yet, so text never duplicates.
 
+The context meter repaints at most once per frame while typing
+(`scheduleContextUI`), and `contextStore.js` memoizes window lookups: a miss
+scans every cached catalog entry with `modelIdsRelated` (~3ms with two big
+gateway catalogs), and the meter asks on every keystroke. Any cache write or
+swap, or a minute passing, starts a fresh memo.
+
 ### Debate — `src/debate/`
 
 ```
 runDebate(cfg, task)                              engine.js
   round 1: all seats in parallel, BLIND           ← nobody sees anyone else
-  rounds 2..n: round-robin over the transcript
+  rounds 2..n: round-robin over the transcript    (or all in parallel, see below)
   final answer: nominated expert OR neutral judge
 ```
 
@@ -337,6 +352,24 @@ Optional **Auto** rounds (`roundMode: 'auto'`): the loop uses a safety cap
 Esc mid-discussion still writes the final answer from the harvested transcript
 (a fresh AbortController, because the first one died with the in-flight seat).
 Fixed mode keeps the old stop path (orphan / unwind).
+
+Optional **parallel turn order** (`turnOrder: 'parallel'`): every round runs
+like round 1 — all live seats at once, each reading the transcript as the
+previous round left it (`runSeatTurn` builds its prompt before its first
+await, so no seat can see a simultaneous turn). Same number of calls; a round
+costs one seat's latency instead of N. Two rules differ from round-robin:
+
+- **Votes are simultaneous, so none resets another.** Round-robin's "a later
+  CONTINUE clears earlier AGREEs" would let seat order decide — the last seat's
+  CONTINUE wiping two AGREEs cast at the same moment. `applyDebateVote(…,
+  { resetOthers: false })` records each vote as cast; consensus is judged once,
+  after the whole round is harvested.
+- **The round harvests before it reacts to a stop or a drop**, exactly like
+  round 1, and dropped seats sit out every later round.
+
+The record carries `turnOrder: 'parallel'` so a restored arena labels its
+rounds. `test/debate-engine.test.js` runs the real round loop (UI stubbed)
+against a fake provider and pins both orders' schedules.
 
 | File | Holds |
 |---|---|
@@ -448,6 +481,12 @@ the team reads why it was turned down and goes back to work. Without this, two
 models will happily declare a whole project complete in two turns having touched
 no files, and write a confident report about it.
 
+**Round trips are the cost.** Every inner step is a full model call, so the
+system prompt asks members to batch every independent action into one message
+(read all the files at once, write several together). The workspace tree is
+listed before every turn and again for the inspector after it; `listProjectTree`
+stats each directory's files concurrently (~85ms → ~12ms for 600 entries).
+
 **Context trimming.** Eight inner steps at up to 12KB of tool output each will
 overrun a small model's window, and providers answer that with a hard 400.
 `pjTrimConvo` drops the oldest tool exchanges, keeps the turn brief and the
@@ -463,7 +502,10 @@ Two sizes have to agree, or the trim cannot do its job. The newest exchange is
 never dropped, so a single tool result larger than the whole budget could never
 be trimmed back under it — which is why `engine.js` elides each result against
 **this seat's** budget (`resultCap`) instead of a fixed 12KB, and why
-`pjTrimConvo` elides the final exchange's content as a last resort. Before
+`pjTrimConvo` elides oversized messages (including the brief) as a last resort.
+Elision notices count toward the budget, and small messages stay intact while
+large messages share the remaining space. Final reports use the same seat
+budget; task-board and decision sections are bounded before trimming. Before
 that, one medium file read on a small-context seat drew the hard 400 and ended
 the session.
 
@@ -481,6 +523,26 @@ the session.
 
 `src/ui/renderer.js` wraps this in the incremental streaming renderer: completed
 blocks render once, only the live tail re-renders, so long replies stay smooth.
+
+**`update()` is O(1) per token.** It stores the text and requests a frame;
+everything that reads the whole reply waits for the paint. That includes the
+mode's `transform` — Debate's `stripStreamingStatusTail`, Project's
+`pjDisplayable` — which used to run per token in the engines: an agent
+streaming a 56KB write fence spent ~1.3s of main thread in `pjDisplayable`
+alone (O(n²)). A frame whose transformed text is unchanged does no DOM work
+(Project's display holds still while a fence is open). Frozen blocks are kept
+while the text still begins with them; a transform may briefly withhold a
+half-typed trailing line, which only trims the blank line after the last
+frozen block and must not re-render them all. Retries (reset and refill in one
+frame) still invalidate them. Discarded Project bubbles cancel pending frames.
+Debate arena scrolling is coalesced once per frame across parallel experts and
+respects a user scrolling away before paint.
+
+History restore stays cheap on long chats: the welcome card is only ever
+`#messages`' first child, so `clearWelcome()` checks that instead of searching
+the whole transcript per appended message, and a restored (collapsed) debate
+arena builds its turns on first open rather than rendering every turn's
+markdown on load.
 
 ---
 
@@ -511,6 +573,9 @@ at a mock OpenAI-compatible provider (`test/helpers/harness.js`).
 | `server-hardening.test.js` | hostile `Host` values, NUL in static paths, anti-framing headers |
 | `timeout.test.js` | idle-timeout phrasing, SSE keep-alives, `/models` timeout |
 | `stream-retry.test.js` | the shipped retry classifier and policy |
+| `stream-renderer.test.js` | the streaming renderer: per-frame transform, frozen-block reuse and invalidation, cancel |
+| `debate-engine.test.js` | the real Debate round loop against a fake provider: parallel vs round-robin schedules and votes |
+| `project-report.test.js` | the Project final report: seat budget, failure and cancel paths |
 | `compose-dispatch.test.js` | composer mode dispatch |
 | `context-share.test.js` | the cross-provider context-window share |
 | `providers-declared.test.js` | declared-model context parsing on provider profiles |
